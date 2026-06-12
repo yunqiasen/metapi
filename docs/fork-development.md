@@ -25,6 +25,18 @@ docker compose up -d --build
 
 Production Compose builds from this fork branch, so code changes are included in the image instead of using the upstream public image.
 
+`AUTH_TOKEN` is the admin login token. `PROXY_TOKEN` is the downstream `/v1/*` Bearer token. Keep both unique per deployment.
+
+## Runtime data and credentials
+
+Keep runtime secrets local to each server:
+
+- `.env` stores deployment secrets and is ignored by Git.
+- `data/` stores the SQLite database and runtime state and is ignored by Git.
+- Third-party login credential payloads are encrypted in the local database. The credential list only shows metadata and masked summaries.
+
+When moving this fork deployment to another server, migrate `data/` and keep the same `ACCOUNT_CREDENTIAL_SECRET`. If the database is moved without the matching secret, saved upstream accounts and site-auth credentials cannot be decrypted.
+
 ## Hot-mounted local development
 
 Stop the production container before starting the dev container because both use port `4000` and container name `metapi`.
@@ -44,6 +56,17 @@ Dev URLs:
 
 The dev container uses `docker/Dockerfile.dev` for Python/make/g++ native rebuild support, bind-mounts the repository into `/app`, and stores Linux dependencies in the named volume `metapi_node_modules`. In dev mode, Vite owns public port `4000`; the backend listens on `4001` inside the container, and `/api` plus `/v1` are proxied back to it. `scripts/dev/docker-entrypoint.sh` installs dependencies only when the volume is missing Vite/tsx/concurrently, then runs the backend watcher and Vite. If `package-lock.json` changes, recreate the dev container or remove the named volume.
 
+Because the repository is bind-mounted, source edits in this directory are reflected inside the dev container. Commit code changes on `Metapi-fork`; do not commit `.env`, `data/`, Cookies, Tokens, callback URLs, or database dumps.
+
+## Provider login credential workflow
+
+Use `Provider 与登录凭证` for two separate things:
+
+- Provider connections: routeable OAuth providers such as Codex, Claude, Gemini CLI, and Antigravity.
+- Third-party login credentials: reusable login material for target sites, currently LinuxDO Cookie, GitHub Token, and Google Token.
+
+Adding a Session connection can query the selected site's login requirements and reuse saved third-party credentials to create a normal Session account. LinuxDO browser-assisted import only parses text the operator pastes manually; it does not read browser HttpOnly Cookies.
+
 ## Update from upstream
 
 ```bash
@@ -58,5 +81,7 @@ git merge main
 # resolve conflicts, run tests/build, then push
 git push origin Metapi-fork
 ```
+
+Stop running Compose services before merging upstream if the merge changes dependencies, schema, or Docker files.
 
 Do not commit `.env`, `data/`, or generated local runtime files.

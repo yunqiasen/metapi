@@ -26,7 +26,7 @@ services:
       DEV_PROXY_TARGET: http://127.0.0.1:${PORT:-4000}
       CHOKIDAR_USEPOLLING: ${CHOKIDAR_USEPOLLING:-true}
     command: >
-      sh -lc "npm ci --ignore-scripts --no-audit --no-fund && npm rebuild esbuild sharp better-sqlite3 --no-audit --no-fund && npm exec -- concurrently \"npm run dev:server\" \"npm exec -- vite --host 0.0.0.0 --port ${FRONTEND_PORT:-5173}\""
+      sh -lc "npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm install --no-save --ignore-scripts --no-audit --no-fund tsx@^4.19.2 vite@^6.4.2 concurrently@^9.1.0 typescript@^6.0.3 @vitejs/plugin-react@^4.3.4 @tailwindcss/vite@^4.3.0 && npm rebuild esbuild sharp better-sqlite3 --no-audit --no-fund && npm exec -- concurrently \"npm run dev:server\" \"npm exec -- vite --host 0.0.0.0 --port ${FRONTEND_PORT:-5173}\""
     restart: unless-stopped
 
 volumes:

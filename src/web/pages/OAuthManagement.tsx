@@ -29,6 +29,7 @@ import {
   type OAuthQuotaInfo,
   type OAuthQuotaWindowInfo,
   type OAuthStartInstructions,
+  type SiteAuthCredentialDecryptabilityResponse,
   type SiteAuthCredentialInfo,
   type SiteAuthProviderInfo,
 } from '../api.js';
@@ -655,6 +656,8 @@ export default function OAuthManagement() {
   const [connections, setConnections] = useState<OAuthConnectionInfo[]>([]);
   const [siteAuthProviders, setSiteAuthProviders] = useState<SiteAuthProviderInfo[]>([]);
   const [siteAuthCredentials, setSiteAuthCredentials] = useState<SiteAuthCredentialInfo[]>([]);
+  const [siteAuthCredentialDecryptability, setSiteAuthCredentialDecryptability] =
+    useState<SiteAuthCredentialDecryptabilityResponse | null>(null);
   const [siteAuthImportOpen, setSiteAuthImportOpen] = useState(false);
   const [siteAuthImportProvider, setSiteAuthImportProvider] = useState<SiteAuthImportProvider>('linuxdo');
   const [siteAuthImportLabel, setSiteAuthImportLabel] = useState('');
@@ -802,9 +805,13 @@ export default function OAuthManagement() {
   }, []);
 
   const loadSiteAuthCredentials = useCallback(async () => {
-    const response = await api.getSiteAuthCredentials();
+    const [response, decryptability] = await Promise.all([
+      api.getSiteAuthCredentials(),
+      api.getSiteAuthCredentialDecryptability(),
+    ]);
     const nextItems = Array.isArray(response?.items) ? response.items : [];
     setSiteAuthCredentials(nextItems);
+    setSiteAuthCredentialDecryptability(decryptability || null);
     return nextItems;
   }, []);
 
@@ -2304,6 +2311,7 @@ export default function OAuthManagement() {
         <SiteAuthCredentialPanel
           providers={siteAuthProviders}
           credentials={siteAuthCredentials}
+          decryptability={siteAuthCredentialDecryptability}
           loaded={loaded}
           onImportCredential={openSiteAuthImportModal}
           onVerifyCredential={handleVerifySiteAuthCredential}

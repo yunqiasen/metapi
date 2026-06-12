@@ -21,6 +21,7 @@ const { apiMock, openMock, focusMock, confirmMock, promptMock } = vi.hoisted(() 
     deleteOAuthRouteUnit: vi.fn(),
     getSiteAuthProviders: vi.fn(),
     getSiteAuthCredentials: vi.fn(),
+    getSiteAuthCredentialDecryptability: vi.fn(),
     importSiteAuthCredential: vi.fn(),
     parseSiteAuthCredentialCapture: vi.fn(),
     verifySiteAuthCredential: vi.fn(),
@@ -112,6 +113,12 @@ describe('OAuthManagement page', () => {
     } as unknown as Window & typeof globalThis);
     apiMock.getSiteAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getSiteAuthCredentials.mockResolvedValue({ items: [], total: 0 });
+    apiMock.getSiteAuthCredentialDecryptability.mockResolvedValue({
+      total: 0,
+      decryptable: 0,
+      failed: 0,
+      items: [],
+    });
   });
 
   afterEach(() => {
@@ -297,6 +304,46 @@ describe('OAuthManagement page', () => {
         expect(text).toContain('linuxdo-user@example.com');
         expect(text).toContain('Cookie');
         expect(text).toContain('有效');
+      });
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('warns when third-party login credentials cannot be decrypted after migration', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthCredentialDecryptability.mockResolvedValue({
+      total: 2,
+      decryptable: 1,
+      failed: 1,
+      items: [
+        { id: 11, provider: 'linuxdo', label: '迁移失败凭证', ok: false, error: 'decrypt failed' },
+        { id: 12, provider: 'github', label: '正常凭证', ok: true },
+      ],
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        const text = collectText(root!.root);
+        expect(text).toContain('有 1 个第三方登录凭证无法解密，请确认 data/ 与 ACCOUNT_CREDENTIAL_SECRET 来自同一次部署。');
+        expect(text).toContain('迁移失败凭证');
       });
     } finally {
       root?.unmount();

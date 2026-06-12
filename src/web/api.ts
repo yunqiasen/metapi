@@ -776,6 +776,19 @@ export type SiteAuthCredentialsResponse = {
   total: number;
 };
 
+export type SiteAuthCredentialDecryptabilityResponse = {
+  total: number;
+  decryptable: number;
+  failed: number;
+  items: Array<{
+    id: number;
+    provider: string;
+    label: string;
+    ok: boolean;
+    error?: string;
+  }>;
+};
+
 export type SiteAuthCredentialImportRequest = {
   provider: string;
   label?: string;
@@ -1305,6 +1318,8 @@ export const api = {
     request("/api/site-auth/providers") as Promise<SiteAuthProvidersResponse>,
   getSiteAuthCredentials: () =>
     request("/api/site-auth/credentials") as Promise<SiteAuthCredentialsResponse>,
+  getSiteAuthCredentialDecryptability: () =>
+    request("/api/site-auth/credentials/decryptability") as Promise<SiteAuthCredentialDecryptabilityResponse>,
   importSiteAuthCredential: (data: SiteAuthCredentialImportRequest) =>
     request("/api/site-auth/credentials/import", {
       method: "POST",

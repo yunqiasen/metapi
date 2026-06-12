@@ -3140,6 +3140,10 @@ textarea {
   justify-content: center;
 }
 
+.oauth-site-auth-health-warning {
+  margin-bottom: 14px;
+}
+
 .oauth-site-auth-list {
   display: grid;
   gap: 10px;

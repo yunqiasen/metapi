@@ -1,8 +1,13 @@
-import type { SiteAuthCredentialInfo, SiteAuthProviderInfo } from '../../api.js';
+import type {
+  SiteAuthCredentialDecryptabilityResponse,
+  SiteAuthCredentialInfo,
+  SiteAuthProviderInfo,
+} from '../../api.js';
 
 type SiteAuthCredentialPanelProps = {
   providers: SiteAuthProviderInfo[];
   credentials: SiteAuthCredentialInfo[];
+  decryptability?: SiteAuthCredentialDecryptabilityResponse | null;
   loaded: boolean;
   onImportCredential: (provider: string) => void;
   onVerifyCredential: (credentialId: number) => void;
@@ -31,6 +36,7 @@ function resolveCredentialIdentity(credential: SiteAuthCredentialInfo): string {
 export default function SiteAuthCredentialPanel({
   providers,
   credentials,
+  decryptability = null,
   loaded,
   onImportCredential,
   onVerifyCredential,
@@ -74,6 +80,20 @@ export default function SiteAuthCredentialPanel({
           </span>
         ))}
       </div>
+
+      {decryptability?.failed ? (
+        <div className="oauth-page-message oauth-page-message-error oauth-site-auth-health-warning">
+          <div className="oauth-page-message-text">
+            有 {decryptability.failed} 个第三方登录凭证无法解密，请确认 data/ 与 ACCOUNT_CREDENTIAL_SECRET 来自同一次部署。
+          </div>
+          <div className="oauth-page-message-meta">
+            {decryptability.items
+              .filter((item) => !item.ok)
+              .map((item) => item.label)
+              .join('、')}
+          </div>
+        </div>
+      ) : null}
 
       {!loaded ? (
         <div className="empty-state oauth-empty-state oauth-site-auth-empty">

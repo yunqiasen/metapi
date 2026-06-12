@@ -184,6 +184,54 @@ describe('OAuthManagement page', () => {
     }
   });
 
+  it('splits provider connections from third-party login credentials', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({
+      providers: [
+        {
+          provider: 'codex',
+          label: 'Codex',
+          platform: 'codex',
+          enabled: true,
+          loginType: 'oauth',
+          requiresProjectId: false,
+          supportsDirectAccountRouting: true,
+          supportsCloudValidation: true,
+          supportsNativeProxy: true,
+        },
+      ],
+    });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        const text = collectText(root!.root);
+        expect(text).toContain('Provider 与登录凭证');
+        expect(text).toContain('Provider 连接列表');
+        expect(text).toContain('第三方登录凭证');
+        expect(text).toContain('暂无第三方登录凭证');
+        expect(text).toContain('添加 LinuxDO、GitHub 或 Google 凭证后，可在添加 Session 连接时复用。');
+      });
+    } finally {
+      root?.unmount();
+    }
+  });
+
   it('renders the oauth workbench toolbar and supports batch quota refresh', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({
       providers: [

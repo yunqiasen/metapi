@@ -11,7 +11,6 @@ import {
 import { createPortal } from 'react-dom';
 import { useLocation } from 'react-router-dom';
 import CenteredModal from '../components/CenteredModal.js';
-import ResponsiveBatchActionBar from '../components/ResponsiveBatchActionBar.js';
 import ResponsiveFilterPanel from '../components/ResponsiveFilterPanel.js';
 import { MobileCard, MobileField } from '../components/MobileCard.js';
 import ModernSelect from '../components/ModernSelect.js';
@@ -19,6 +18,8 @@ import { useToast } from '../components/Toast.js';
 import { useAnimatedVisibility } from '../components/useAnimatedVisibility.js';
 import { useIsMobile } from '../components/useIsMobile.js';
 import OAuthModelsModal, { type OAuthModelItem } from './oauth/OAuthModelsModal.js';
+import ProviderConnectionPanel from './oauth/ProviderConnectionPanel.js';
+import SiteAuthCredentialPanel from './oauth/SiteAuthCredentialPanel.js';
 import {
   api,
   type OAuthConnectionInfo,
@@ -2019,9 +2020,9 @@ export default function OAuthManagement() {
     <div className="page-container animate-fade-in">
       <div className="page-header">
         <div>
-          <h2 className="page-title">OAuth 管理</h2>
+          <h2 className="page-title">Provider 与登录凭证</h2>
           <div className="page-subtitle">
-            统一管理需要浏览器授权的官方上游连接。OAuth 账号以后只在这里维护，不再和普通连接管理页重复显示。
+            OAuth 管理升级为双区工作台：左侧维护可路由官方上游连接，右侧维护用于登录目标站点的第三方凭证。
           </div>
         </div>
         {!isMobile ? (
@@ -2083,77 +2084,76 @@ export default function OAuthManagement() {
         }
       />
 
-      <div className="card oauth-workbench-card">
-        <div className="oauth-workbench-head">
-          <div>
-            <div className="oauth-workbench-title">OAuth 连接列表</div>
-            <div className="oauth-workbench-meta">
-              已连接 {connections.length} 个 OAuth 账号，当前筛选后显示 {filteredConnections.length} 个。
-            </div>
-          </div>
-        </div>
-
-        {selectedConnectionIds.length > 0 ? (
-          <ResponsiveBatchActionBar isMobile={isMobile} info={`已选 ${selectedConnectionIds.length} 项`} desktopStyle={{ marginBottom: 12 }}>
-            <button
-              type="button"
-              className="btn btn-ghost oauth-outline-button"
-              onClick={handleRefreshSelected}
-              disabled={actionLoadingKey === 'quota:selected'}
-            >
-              {actionLoadingKey === 'quota:selected' ? '刷新中...' : '批量刷新额度'}
-            </button>
-            {canMergeSelectedIntoRouteUnit ? (
+      <div className="oauth-hub-grid">
+        <ProviderConnectionPanel
+          connectionCount={connections.length}
+          filteredCount={filteredConnections.length}
+          selectedCount={selectedConnectionIds.length}
+          isMobile={isMobile}
+          batchActions={(
+            <>
               <button
                 type="button"
                 className="btn btn-ghost oauth-outline-button"
-                onClick={openRouteUnitModal}
+                onClick={handleRefreshSelected}
+                disabled={actionLoadingKey === 'quota:selected'}
               >
-                合并参与路由
+                {actionLoadingKey === 'quota:selected' ? '刷新中...' : '批量刷新额度'}
               </button>
-            ) : null}
-            {canSplitSelectedRouteUnit ? (
+              {canMergeSelectedIntoRouteUnit ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost oauth-outline-button"
+                  onClick={openRouteUnitModal}
+                >
+                  合并参与路由
+                </button>
+              ) : null}
+              {canSplitSelectedRouteUnit ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost oauth-outline-button"
+                  onClick={handleDeleteSelectedRouteUnit}
+                  disabled={actionLoadingKey === 'route-unit:delete'}
+                >
+                  {actionLoadingKey === 'route-unit:delete' ? '拆分中...' : '拆回单体'}
+                </button>
+              ) : null}
               <button
                 type="button"
-                className="btn btn-ghost oauth-outline-button"
-                onClick={handleDeleteSelectedRouteUnit}
-                disabled={actionLoadingKey === 'route-unit:delete'}
+                className="btn btn-link btn-link-danger"
+                onClick={handleDeleteSelected}
+                disabled={actionLoadingKey === 'delete:selected'}
               >
-                {actionLoadingKey === 'route-unit:delete' ? '拆分中...' : '拆回单体'}
+                {actionLoadingKey === 'delete:selected' ? '删除中...' : '批量删除'}
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn-link btn-link-danger"
-              onClick={handleDeleteSelected}
-              disabled={actionLoadingKey === 'delete:selected'}
-            >
-              {actionLoadingKey === 'delete:selected' ? '删除中...' : '批量删除'}
-            </button>
-          </ResponsiveBatchActionBar>
-        ) : null}
-
-        {!loaded ? (
-          <div className="empty-state oauth-empty-state">
-            <svg className="empty-state-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
-            </svg>
-            <div className="empty-state-title">加载中...</div>
-            <div className="empty-state-desc">正在加载 OAuth 连接与额度信息。</div>
-          </div>
-        ) : filteredConnections.length === 0 ? (
-          <div className="empty-state oauth-empty-state">
-            <svg className="empty-state-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            <div className="empty-state-title">暂无 OAuth 连接</div>
-            <div className="empty-state-desc">
-              使用右上角“新建 OAuth 连接”接入 Codex、Claude、Gemini CLI 或 Antigravity。
+            </>
+          )}
+        >
+          {!loaded ? (
+            <div className="empty-state oauth-empty-state">
+              <svg className="empty-state-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+              </svg>
+              <div className="empty-state-title">加载中...</div>
+              <div className="empty-state-desc">正在加载 Provider 连接与额度信息。</div>
             </div>
-          </div>
-        ) : (
-          isMobile ? mobileList : desktopTable
-        )}
+          ) : filteredConnections.length === 0 ? (
+            <div className="empty-state oauth-empty-state">
+              <svg className="empty-state-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              <div className="empty-state-title">暂无 Provider 连接</div>
+              <div className="empty-state-desc">
+                使用右上角“新建 OAuth 连接”接入 Codex、Claude、Gemini CLI 或 Antigravity。
+              </div>
+            </div>
+          ) : (
+            isMobile ? mobileList : desktopTable
+          )}
+        </ProviderConnectionPanel>
+
+        <SiteAuthCredentialPanel />
       </div>
 
       <SideDrawer

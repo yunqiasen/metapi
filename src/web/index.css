@@ -3524,6 +3524,10 @@ textarea {
   resize: vertical;
 }
 
+.oauth-capture-parse-button {
+  justify-self: start;
+}
+
 .oauth-mono {
   font-family: var(--font-mono);
 }

@@ -800,6 +800,21 @@ export type SiteAuthCredentialVerifyResponse = {
   message?: string;
 };
 
+export type SiteAuthCredentialCaptureParseRequest = {
+  text: string;
+  defaultProvider?: string;
+};
+
+export type SiteAuthCredentialCaptureParseResponse = {
+  success: boolean;
+  parsed: {
+    provider: string;
+    credentialType: string;
+    payload: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  };
+};
+
 export type SiteAuthRequirementInfo = {
   provider: string;
   label: string;
@@ -1297,6 +1312,11 @@ export const api = {
     request(`/api/site-auth/credentials/${credentialId}`, {
       method: "DELETE",
     }) as Promise<{ success: boolean }>,
+  parseSiteAuthCredentialCapture: (data: SiteAuthCredentialCaptureParseRequest) =>
+    request("/api/site-auth/credentials/parse-capture", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }) as Promise<SiteAuthCredentialCaptureParseResponse>,
   getSiteAuthRequirements: (siteId: number) =>
     request(`/api/sites/${siteId}/auth-requirements`) as Promise<SiteAuthRequirementsResponse>,
 

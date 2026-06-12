@@ -638,8 +638,10 @@ export default function OAuthManagement() {
   const [siteAuthCredentials, setSiteAuthCredentials] = useState<SiteAuthCredentialInfo[]>([]);
   const [siteAuthImportOpen, setSiteAuthImportOpen] = useState(false);
   const [siteAuthImportLabel, setSiteAuthImportLabel] = useState('');
+  const [siteAuthCaptureText, setSiteAuthCaptureText] = useState('');
   const [siteAuthImportCookie, setSiteAuthImportCookie] = useState('');
   const [siteAuthImporting, setSiteAuthImporting] = useState(false);
+  const [siteAuthCaptureParsing, setSiteAuthCaptureParsing] = useState(false);
   const [verifyingSiteAuthCredentialId, setVerifyingSiteAuthCredentialId] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [sessionFeedback, setSessionFeedback] = useState<SessionFeedback | null>(null);
@@ -812,16 +814,46 @@ export default function OAuthManagement() {
 
   const openSiteAuthImportModal = useCallback(() => {
     setSiteAuthImportLabel('');
+    setSiteAuthCaptureText('');
     setSiteAuthImportCookie('');
     setSiteAuthImportOpen(true);
   }, []);
 
   const closeSiteAuthImportModal = useCallback(() => {
-    if (siteAuthImporting) return;
+    if (siteAuthImporting || siteAuthCaptureParsing) return;
     setSiteAuthImportOpen(false);
     setSiteAuthImportLabel('');
+    setSiteAuthCaptureText('');
     setSiteAuthImportCookie('');
-  }, [siteAuthImporting]);
+  }, [siteAuthCaptureParsing, siteAuthImporting]);
+
+  const handleParseSiteAuthCapture = useCallback(async () => {
+    const text = siteAuthCaptureText.trim();
+    if (!text) {
+      toast.error('请先粘贴浏览器里复制的 Cookie 或 callback URL');
+      return;
+    }
+    setSiteAuthCaptureParsing(true);
+    try {
+      const result = await api.parseSiteAuthCredentialCapture({
+        text,
+        defaultProvider: 'linuxdo',
+      });
+      const cookie = typeof result.parsed?.payload?.cookie === 'string'
+        ? result.parsed.payload.cookie.trim()
+        : '';
+      if (result.parsed?.provider !== 'linuxdo' || result.parsed?.credentialType !== 'cookie' || !cookie) {
+        toast.error('未解析到 LinuxDO Cookie');
+        return;
+      }
+      setSiteAuthImportCookie(cookie);
+      toast.success('已解析 LinuxDO Cookie');
+    } catch (error: any) {
+      toast.error(error?.message || '浏览器辅助内容解析失败');
+    } finally {
+      setSiteAuthCaptureParsing(false);
+    }
+  }, [siteAuthCaptureText, toast]);
 
   const handleImportLinuxDoCredential = useCallback(async () => {
     const cookie = siteAuthImportCookie.trim();
@@ -841,6 +873,7 @@ export default function OAuthManagement() {
       await loadSiteAuthCredentials();
       setSiteAuthImportOpen(false);
       setSiteAuthImportLabel('');
+      setSiteAuthCaptureText('');
       setSiteAuthImportCookie('');
       toast.success('LinuxDO 凭证已保存');
     } catch (error: any) {
@@ -2261,10 +2294,10 @@ export default function OAuthManagement() {
         maxWidth={560}
         footer={(
           <>
-            <button type="button" className="btn btn-ghost" onClick={closeSiteAuthImportModal} disabled={siteAuthImporting}>
+            <button type="button" className="btn btn-ghost" onClick={closeSiteAuthImportModal} disabled={siteAuthImporting || siteAuthCaptureParsing}>
               取消
             </button>
-            <button type="button" className="btn btn-primary" onClick={handleImportLinuxDoCredential} disabled={siteAuthImporting || !siteAuthImportCookie.trim()}>
+            <button type="button" className="btn btn-primary" onClick={handleImportLinuxDoCredential} disabled={siteAuthImporting || siteAuthCaptureParsing || !siteAuthImportCookie.trim()}>
               {siteAuthImporting ? '保存中...' : '保存凭证'}
             </button>
           </>
@@ -2281,6 +2314,28 @@ export default function OAuthManagement() {
               onChange={(event) => setSiteAuthImportLabel(event.target.value)}
               placeholder="LinuxDO 手动凭证"
             />
+          </div>
+          <div className="oauth-form-field">
+            <div className="oauth-field-label">浏览器辅助粘贴</div>
+            <textarea
+              className="oauth-textarea oauth-mono"
+              data-site-auth-import="capture"
+              value={siteAuthCaptureText}
+              onChange={(event) => setSiteAuthCaptureText(event.target.value)}
+              placeholder="粘贴浏览器复制的 Cookie 串或 OAuth callback URL"
+              rows={3}
+            />
+            <div className="oauth-form-note">
+              不读取浏览器里的 HttpOnly Cookie，只解析你主动粘贴的 Cookie、callback URL 或授权片段。
+            </div>
+            <button
+              type="button"
+              className="btn btn-ghost oauth-capture-parse-button"
+              onClick={handleParseSiteAuthCapture}
+              disabled={siteAuthCaptureParsing || !siteAuthCaptureText.trim()}
+            >
+              {siteAuthCaptureParsing ? '解析中...' : '解析并填入'}
+            </button>
           </div>
           <div className="oauth-form-field">
             <div className="oauth-field-label">LinuxDO Cookie</div>

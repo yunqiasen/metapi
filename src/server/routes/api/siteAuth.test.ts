@@ -131,6 +131,45 @@ describe('site auth routes', () => {
     expect(rows[0]?.encryptedPayload).not.toContain('super-secret-session');
   });
 
+  it('parses browser assisted LinuxDO credential text', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/site-auth/credentials/parse-capture',
+      payload: {
+        text: 'ld_auth_session=route-secret; theme=light',
+        defaultProvider: 'linuxdo',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      parsed: {
+        provider: 'linuxdo',
+        credentialType: 'cookie',
+        payload: { cookie: 'ld_auth_session=route-secret' },
+      },
+    });
+  });
+
+  it('rejects invalid browser capture text without echoing the pasted value', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/site-auth/credentials/parse-capture',
+      payload: {
+        text: 'bad pasted text with hidden-secret',
+        defaultProvider: 'linuxdo',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).not.toContain('hidden-secret');
+    expect(response.json()).toMatchObject({
+      success: false,
+      message: 'no supported site auth credential found',
+    });
+  });
+
   it('verifies a LinuxDO cookie credential and updates identity metadata', async () => {
     const created = await vault.createSiteAuthCredential({
       provider: 'linuxdo',

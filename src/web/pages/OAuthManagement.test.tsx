@@ -22,6 +22,7 @@ const { apiMock, openMock, focusMock, confirmMock, promptMock } = vi.hoisted(() 
     getSiteAuthProviders: vi.fn(),
     getSiteAuthCredentials: vi.fn(),
     importSiteAuthCredential: vi.fn(),
+    parseSiteAuthCredentialCapture: vi.fn(),
     verifySiteAuthCredential: vi.fn(),
     deleteSiteAuthCredential: vi.fn(),
     getAccountModels: vi.fn(),
@@ -374,6 +375,57 @@ describe('OAuthManagement page', () => {
       });
       expect(apiMock.getSiteAuthCredentials).toHaveBeenCalledTimes(2);
       expect(collectText(root.root)).toContain('LinuxDO 手动凭证');
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('parses browser assisted LinuxDO cookie text into the import form', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.parseSiteAuthCredentialCapture.mockResolvedValue({
+      success: true,
+      parsed: {
+        provider: 'linuxdo',
+        credentialType: 'cookie',
+        payload: { cookie: 'ld_auth_session=parsed-session' },
+      },
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('导入 LinuxDO 凭证');
+      });
+
+      await clickButton(root!, '导入 LinuxDO 凭证');
+      const captureInput = root.root.find((node) => node.type === 'textarea' && node.props['data-site-auth-import'] === 'capture');
+      const cookieInput = root.root.find((node) => node.type === 'textarea' && node.props['data-site-auth-import'] === 'cookie');
+      await act(async () => {
+        captureInput.props.onChange({ target: { value: 'ld_auth_session=parsed-session; theme=light' } });
+      });
+      await clickButton(root!, '解析并填入');
+
+      expect(apiMock.parseSiteAuthCredentialCapture).toHaveBeenCalledWith({
+        text: 'ld_auth_session=parsed-session; theme=light',
+        defaultProvider: 'linuxdo',
+      });
+      expect(cookieInput.props.value).toBe('ld_auth_session=parsed-session');
     } finally {
       root?.unmount();
     }

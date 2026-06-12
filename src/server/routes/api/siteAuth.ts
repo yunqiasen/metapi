@@ -1,6 +1,9 @@
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import { parseSiteAuthCredentialImportPayload } from '../../contracts/siteAuthRoutePayloads.js';
+import {
+  parseSiteAuthCredentialCapturePayload,
+  parseSiteAuthCredentialImportPayload,
+} from '../../contracts/siteAuthRoutePayloads.js';
 import { createRateLimitGuard } from '../../middleware/requestRateLimit.js';
 import { db, schema } from '../../db/index.js';
 import {
@@ -8,6 +11,7 @@ import {
   deleteSiteAuthCredential,
   listSiteAuthCredentials,
 } from '../../services/site-auth/credentialVault.js';
+import { parseSiteAuthCaptureText } from '../../services/site-auth/browserCapture.js';
 import { verifySiteAuthCredential } from '../../services/site-auth/credentialVerifier.js';
 import { listSiteAuthProviderDefinitions } from '../../services/site-auth/providers.js';
 import { resolveSiteAuthRequirementsForSite } from '../../services/site-auth/siteAuthRequirements.js';
@@ -27,6 +31,12 @@ const limitSiteAuthCredentialRead = createRateLimitGuard({
 const limitSiteAuthCredentialImport = createRateLimitGuard({
   bucket: 'site-auth-credential-import',
   max: 20,
+  windowMs: 60_000,
+});
+
+const limitSiteAuthCredentialCaptureParse = createRateLimitGuard({
+  bucket: 'site-auth-credential-capture-parse',
+  max: 30,
   windowMs: 60_000,
 });
 
@@ -92,6 +102,30 @@ export async function siteAuthRoutes(app: FastifyInstance) {
         return reply.code(400).send({
           success: false,
           message: error?.message || 'site auth credential import failed',
+        });
+      }
+    },
+  );
+
+  app.post<{ Body: unknown }>(
+    '/api/site-auth/credentials/parse-capture',
+    { preHandler: [limitSiteAuthCredentialCaptureParse] },
+    async (request, reply) => {
+      const parsedBody = parseSiteAuthCredentialCapturePayload(request.body);
+      if (!parsedBody.success) {
+        return reply.code(400).send({ success: false, message: parsedBody.error });
+      }
+
+      try {
+        const parsed = parseSiteAuthCaptureText(
+          parsedBody.data.text,
+          parsedBody.data.defaultProvider,
+        );
+        return { success: true, parsed };
+      } catch (error: any) {
+        return reply.code(400).send({
+          success: false,
+          message: error?.message || 'site auth credential capture parse failed',
         });
       }
     },

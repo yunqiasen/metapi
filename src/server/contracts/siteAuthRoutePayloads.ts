@@ -16,7 +16,13 @@ const siteAuthCredentialImportPayloadSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();
 
+const siteAuthCredentialCapturePayloadSchema = z.object({
+  text: z.string(),
+  defaultProvider: siteAuthProviderSchema.optional(),
+}).passthrough();
+
 export type SiteAuthCredentialImportPayload = z.output<typeof siteAuthCredentialImportPayloadSchema>;
+export type SiteAuthCredentialCapturePayload = z.output<typeof siteAuthCredentialCapturePayloadSchema>;
 
 function normalizeSiteAuthPayloadInput(input: unknown): unknown {
   return input === undefined ? {} : input;
@@ -37,12 +43,29 @@ function formatSiteAuthPayloadError(error: z.ZodError): string {
   if (firstPath === 'status') return 'Invalid status. Expected active/expired/invalid/disabled.';
   if (firstPath === 'expiresAt') return 'Invalid expiresAt. Expected string or null.';
   if (firstPath === 'metadata') return 'Invalid metadata. Expected object.';
+  if (firstPath === 'text') return 'Invalid text. Expected string.';
+  if (firstPath === 'defaultProvider') return 'Invalid defaultProvider. Expected linuxdo/github/google.';
   return 'Invalid site auth payload.';
 }
 
 export function parseSiteAuthCredentialImportPayload(input: unknown):
 { success: true; data: SiteAuthCredentialImportPayload } | { success: false; error: string } {
   const result = siteAuthCredentialImportPayloadSchema.safeParse(normalizeSiteAuthPayloadInput(input));
+  if (!result.success) {
+    return {
+      success: false,
+      error: formatSiteAuthPayloadError(result.error),
+    };
+  }
+  return {
+    success: true,
+    data: result.data,
+  };
+}
+
+export function parseSiteAuthCredentialCapturePayload(input: unknown):
+{ success: true; data: SiteAuthCredentialCapturePayload } | { success: false; error: string } {
+  const result = siteAuthCredentialCapturePayloadSchema.safeParse(normalizeSiteAuthPayloadInput(input));
   if (!result.success) {
     return {
       success: false,

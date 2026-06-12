@@ -15,3 +15,19 @@ export type SiteAuthProviderMetadata = {
 export type SiteAuthProviderDefinition = {
   metadata: SiteAuthProviderMetadata;
 };
+
+export type SiteAuthRequirementConfidence = 'explicit' | 'detected';
+
+export type SiteAuthRequirement = {
+  provider: SiteAuthProviderId;
+  label: string;
+  required: boolean;
+  confidence: SiteAuthRequirementConfidence;
+  reason: string;
+};
+
+export type SiteAuthRequirementResult = {
+  siteId: number;
+  hasThirdPartyLogin: boolean;
+  requirements: SiteAuthRequirement[];
+};

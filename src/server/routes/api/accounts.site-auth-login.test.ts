@@ -133,4 +133,39 @@ describe('accounts site auth login', () => {
       apiTokenFound: true,
     });
   });
+
+  it('returns a safe bridge failure message without leaking credential payloads', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'LinuxDO Target',
+      url: 'https://target.example.com',
+      platform: 'new-api',
+      status: 'active',
+    }).returning().get();
+    const credential = await vault.createSiteAuthCredential({
+      provider: 'linuxdo',
+      label: '主 LinuxDO',
+      credentialType: 'cookie',
+      payload: { cookie: 'ld_auth_session=super-secret-cookie' },
+      status: 'active',
+    });
+    externalAuthLoginMock.mockRejectedValueOnce(new Error('HTTP 403 forbidden ld_auth_session=super-secret-cookie'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/site-auth-login',
+      payload: {
+        siteId: site.id,
+        credentialId: credential.id,
+        skipModelFetch: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual(expect.objectContaining({
+      success: false,
+      message: '第三方登录桥接失败：凭证无效或目标站点拒绝授权。',
+    }));
+    expect(response.body).not.toContain('ld_auth_session');
+    expect(response.body).not.toContain('super-secret-cookie');
+  });
 });

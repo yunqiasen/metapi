@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolveSiteAuthLogin } from './loginBridge.js';
+import { resolveSiteAuthLogin, toSafeSiteAuthBridgeError } from './loginBridge.js';
 import type {
   ExternalAuthLoginInput,
   ExternalAuthLoginResult,
@@ -93,5 +93,14 @@ describe('resolveSiteAuthLogin', () => {
         payload: { cookie: 'ld_auth_session=secret' },
       },
     })).rejects.toThrow('target site login bridge did not return an access token');
+  });
+
+  it('maps bridge errors to safe operator messages without credential payloads', () => {
+    expect(toSafeSiteAuthBridgeError(new Error('upstream timeout ld_auth_session=secret')))
+      .toBe('第三方登录桥接失败：目标站点连接超时。');
+    expect(toSafeSiteAuthBridgeError(new Error('HTTP 403 forbidden token=secret')))
+      .toBe('第三方登录桥接失败：凭证无效或目标站点拒绝授权。');
+    expect(toSafeSiteAuthBridgeError(new Error('target site login bridge did not return an access token ld_auth_session=secret')))
+      .toBe('第三方登录桥接失败：目标站点没有返回可用 Session。');
   });
 });

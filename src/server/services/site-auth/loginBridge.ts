@@ -26,6 +26,17 @@ function normalizeSiteUrl(site: SiteAuthLoginSiteInput): string {
   return url;
 }
 
+export function toSafeSiteAuthBridgeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (/timeout|ETIMEDOUT|ECONNRESET/i.test(message)) {
+    return '第三方登录桥接失败：目标站点连接超时。';
+  }
+  if (/401|403|unauthorized|forbidden/i.test(message)) {
+    return '第三方登录桥接失败：凭证无效或目标站点拒绝授权。';
+  }
+  return '第三方登录桥接失败：目标站点没有返回可用 Session。';
+}
+
 export async function resolveSiteAuthLogin({
   site,
   adapter,

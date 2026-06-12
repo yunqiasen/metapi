@@ -63,7 +63,7 @@ import {
   getSiteAuthCredential,
   getSiteAuthCredentialPayload,
 } from "../../services/site-auth/credentialVault.js";
-import { resolveSiteAuthLogin } from "../../services/site-auth/loginBridge.js";
+import { resolveSiteAuthLogin, toSafeSiteAuthBridgeError } from "../../services/site-auth/loginBridge.js";
 
 type AccountWithSiteRow = {
   accounts: typeof schema.accounts.$inferSelect;
@@ -1359,10 +1359,9 @@ export async function accountsRoutes(app: FastifyInstance) {
         message: created.message,
       };
     } catch (error: any) {
-      return reply.code(400).send({
+      return reply.code(502).send({
         success: false,
-        requiresVerification: error?.requiresVerification === true,
-        message: appendSessionTokenRebindHint(error?.message || "站点第三方登录失败"),
+        message: toSafeSiteAuthBridgeError(error),
       });
     }
   });

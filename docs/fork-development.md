@@ -37,12 +37,12 @@ docker compose -f docker-compose.dev.yml logs -f metapi
 
 Dev URLs:
 
-- Admin UI: `http://<host>:5173`
-- Backend/API: `http://<host>:4000`
-- Tailscale UI on this machine: `http://100.126.43.55:5173`
-- Tailscale API on this machine: `http://100.126.43.55:4000`
+- Unified UI and proxied API: `http://<host>:4000`
+- Direct backend debug port: `http://<host>:4001`
+- Tailscale UI and API on this machine: `http://100.126.43.55:4000`
+- Tailscale direct backend debug port: `http://100.126.43.55:4001`
 
-The dev container uses `docker/Dockerfile.dev` for Python/make/g++ native rebuild support, bind-mounts the repository into `/app`, and stores Linux dependencies in the named volume `metapi_node_modules`. `scripts/dev/docker-entrypoint.sh` installs dependencies only when the volume is missing Vite/tsx/concurrently, then runs the backend watcher and Vite. If `package-lock.json` changes, recreate the dev container or remove the named volume.
+The dev container uses `docker/Dockerfile.dev` for Python/make/g++ native rebuild support, bind-mounts the repository into `/app`, and stores Linux dependencies in the named volume `metapi_node_modules`. In dev mode, Vite owns public port `4000`; the backend listens on `4001` inside the container, and `/api` plus `/v1` are proxied back to it. `scripts/dev/docker-entrypoint.sh` installs dependencies only when the volume is missing Vite/tsx/concurrently, then runs the backend watcher and Vite. If `package-lock.json` changes, recreate the dev container or remove the named volume.
 
 ## Update from upstream
 

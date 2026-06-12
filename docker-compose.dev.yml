@@ -7,8 +7,8 @@ services:
     container_name: metapi
     working_dir: /app
     ports:
-      - "4000:4000"
-      - "5173:5173"
+      - "${FRONTEND_PORT:-4000}:${FRONTEND_PORT:-4000}"
+      - "${BACKEND_DEBUG_PORT:-4001}:${BACKEND_PORT:-4001}"
     volumes:
       - .:/app
       - metapi_node_modules:/app/node_modules
@@ -20,13 +20,13 @@ services:
       ACCOUNT_CREDENTIAL_SECRET: ${ACCOUNT_CREDENTIAL_SECRET:?ACCOUNT_CREDENTIAL_SECRET is required}
       CHECKIN_CRON: ${CHECKIN_CRON:-0 8 * * *}
       BALANCE_REFRESH_CRON: ${BALANCE_REFRESH_CRON:-0 * * * *}
-      PORT: ${PORT:-4000}
+      PORT: ${BACKEND_PORT:-4001}
       HOST: 0.0.0.0
       DATA_DIR: /app/data
       TZ: ${TZ:-Asia/Shanghai}
       VITE_DEV_HOST: 0.0.0.0
-      VITE_FRONTEND_PORT: ${FRONTEND_PORT:-5173}
-      DEV_PROXY_TARGET: http://127.0.0.1:${PORT:-4000}
+      VITE_FRONTEND_PORT: ${FRONTEND_PORT:-4000}
+      DEV_PROXY_TARGET: http://127.0.0.1:${BACKEND_PORT:-4001}
       CHOKIDAR_USEPOLLING: ${CHOKIDAR_USEPOLLING:-true}
     command: ./scripts/dev/docker-entrypoint.sh
     restart: unless-stopped

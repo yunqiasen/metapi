@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+FRONTEND_PORT="${FRONTEND_PORT:-4000}"
 
 if [ ! -x ./node_modules/.bin/vite ] || [ ! -x ./node_modules/.bin/tsx ] || [ ! -x ./node_modules/.bin/concurrently ]; then
   npm ci --ignore-scripts --no-audit --no-fund

@@ -61,6 +61,14 @@ const accountVerifyTokenPayloadSchema = z.object({
   credentialMode: accountCredentialModeSchema.optional(),
 }).passthrough();
 
+const accountSiteAuthLoginPayloadSchema = z.object({
+  siteId: z.number().int().positive(),
+  credentialId: z.number().int().positive(),
+  username: z.string().optional(),
+  checkinEnabled: z.boolean().optional(),
+  skipModelFetch: z.boolean().optional(),
+}).passthrough();
+
 const accountManualModelsPayloadSchema = z.object({
   models: z.array(z.string()).optional(),
 }).passthrough();
@@ -71,6 +79,7 @@ export type AccountHealthRefreshPayload = z.output<typeof accountHealthRefreshPa
 export type AccountLoginPayload = z.output<typeof accountLoginPayloadSchema>;
 export type AccountManualModelsPayload = z.output<typeof accountManualModelsPayloadSchema>;
 export type AccountRebindSessionPayload = z.output<typeof accountRebindSessionPayloadSchema>;
+export type AccountSiteAuthLoginPayload = z.output<typeof accountSiteAuthLoginPayloadSchema>;
 export type AccountUpdatePayload = z.output<typeof accountUpdatePayloadSchema>;
 export type AccountVerifyTokenPayload = z.output<typeof accountVerifyTokenPayloadSchema>;
 
@@ -83,6 +92,9 @@ function formatAccountsPayloadError(error: z.ZodError): string {
   const firstPath = firstIssue?.path[0];
   if (firstPath === 'siteId') {
     return 'Invalid siteId. Expected positive number.';
+  }
+  if (firstPath === 'credentialId') {
+    return 'Invalid credentialId. Expected positive number.';
   }
   if (firstPath === 'accessToken') {
     return 'Invalid accessToken. Expected string.';
@@ -195,6 +207,11 @@ export function parseAccountLoginPayload(input: unknown):
 export function parseAccountVerifyTokenPayload(input: unknown):
 { success: true; data: AccountVerifyTokenPayload } | { success: false; error: string } {
   return parseAccountsPayload(accountVerifyTokenPayloadSchema, input);
+}
+
+export function parseAccountSiteAuthLoginPayload(input: unknown):
+{ success: true; data: AccountSiteAuthLoginPayload } | { success: false; error: string } {
+  return parseAccountsPayload(accountSiteAuthLoginPayloadSchema, input);
 }
 
 export function parseAccountManualModelsPayload(input: unknown):

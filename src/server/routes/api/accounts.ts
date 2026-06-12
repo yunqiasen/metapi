@@ -43,9 +43,11 @@ import {
   parseAccountBatchPayload,
   parseAccountCreatePayload,
   parseAccountHealthRefreshPayload,
+  parseAccountSiteAuthLoginPayload,
   parseAccountLoginPayload,
   parseAccountManualModelsPayload,
   parseAccountRebindSessionPayload,
+  parseAccountSiteAuthLoginPayload,
   parseAccountUpdatePayload,
   parseAccountVerifyTokenPayload,
 } from "../../contracts/accountsRoutePayloads.js";
@@ -58,6 +60,16 @@ import {
   parseBatchApiKeys,
 } from "../../services/apiKeyBatch.js";
 import { createManualAccount } from "../../services/manualAccountCreationService.js";
+import {
+  getSiteAuthCredential,
+  getSiteAuthCredentialPayload,
+} from "../../services/site-auth/credentialVault.js";
+import { resolveSiteAuthLogin } from "../../services/site-auth/loginBridge.js";
+import {
+  getSiteAuthCredential,
+  getSiteAuthCredentialPayload,
+} from "../../services/site-auth/credentialVault.js";
+import { resolveSiteAuthLogin } from "../../services/site-auth/loginBridge.js";
 
 type AccountWithSiteRow = {
   accounts: typeof schema.accounts.$inferSelect;
@@ -1261,6 +1273,105 @@ export async function accountsRoutes(app: FastifyInstance) {
       };
     },
   );
+
+  app.post<{ Body: unknown }>("/api/accounts/site-auth-login", async (request, reply) => {
+    const parsedBody = parseAccountSiteAuthLoginPayload(request.body);
+    if (!parsedBody.success) {
+      return reply
+        .code(400)
+        .send({ success: false, message: parsedBody.error });
+    }
+
+    const body = parsedBody.data;
+    const site = await db
+      .select()
+      .from(schema.sites)
+      .where(eq(schema.sites.id, body.siteId))
+      .get();
+    if (!site) {
+      return reply
+        .code(400)
+        .send({ success: false, message: "site not found" });
+    }
+
+    const adapter = getAdapter(site.platform);
+    if (!adapter) {
+      return reply
+        .code(400)
+        .send({
+          success: false,
+          message: `platform not supported: ${site.platform}`,
+        });
+    }
+
+    const credential = await getSiteAuthCredential(body.credentialId);
+    if (!credential) {
+      return reply
+        .code(404)
+        .send({ success: false, message: "site auth credential not found" });
+    }
+    if (credential.status !== "active") {
+      return reply
+        .code(400)
+        .send({ success: false, message: "site auth credential is not active" });
+    }
+
+    const payload = await getSiteAuthCredentialPayload(credential.id);
+    if (!payload) {
+      return reply
+        .code(404)
+        .send({ success: false, message: "site auth credential not found" });
+    }
+
+    try {
+      const bridgeResult = await resolveSiteAuthLogin({
+        site,
+        adapter,
+        credential: {
+          provider: credential.provider,
+          credentialType: credential.credentialType,
+          payload,
+        },
+      });
+      const accountBody = {
+        siteId: body.siteId,
+        username: body.username || bridgeResult.username,
+        accessToken: bridgeResult.accessToken,
+        platformUserId: bridgeResult.platformUserId,
+        refreshToken: bridgeResult.refreshToken,
+        tokenExpiresAt: bridgeResult.tokenExpiresAt,
+        credentialMode: "session" as const,
+        checkinEnabled: body.checkinEnabled,
+        skipModelFetch: body.skipModelFetch,
+      } satisfies AccountCreatePayload;
+      const created = await createManualAccount({
+        body: accountBody,
+        site,
+        adapter,
+        credentialMode: "session",
+        rawAccessToken: bridgeResult.accessToken,
+        usernameOverride: body.username || bridgeResult.username,
+      });
+      return {
+        ...created.account,
+        tokenType: created.tokenType,
+        credentialMode: resolveStoredCredentialMode(created.account),
+        capabilities: buildCapabilitiesForAccount(created.account),
+        modelCount: created.modelCount,
+        apiTokenFound: created.apiTokenFound,
+        usernameDetected: created.usernameDetected,
+        queued: created.queued,
+        jobId: created.jobId,
+        message: created.message,
+      };
+    } catch (error: any) {
+      return reply.code(400).send({
+        success: false,
+        requiresVerification: error?.requiresVerification === true,
+        message: appendSessionTokenRebindHint(error?.message || "站点第三方登录失败"),
+      });
+    }
+  });
 
   // Add an account (manual credential input)
   app.post<{ Body: unknown }>("/api/accounts", async (request, reply) => {

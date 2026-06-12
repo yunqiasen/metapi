@@ -4,7 +4,7 @@ type SiteAuthCredentialPanelProps = {
   providers: SiteAuthProviderInfo[];
   credentials: SiteAuthCredentialInfo[];
   loaded: boolean;
-  onImportLinuxDo: () => void;
+  onImportCredential: (provider: string) => void;
   onVerifyCredential: (credentialId: number) => void;
   onDeleteCredential: (credentialId: number) => void;
   verifyingCredentialId?: number | null;
@@ -32,7 +32,7 @@ export default function SiteAuthCredentialPanel({
   providers,
   credentials,
   loaded,
-  onImportLinuxDo,
+  onImportCredential,
   onVerifyCredential,
   onDeleteCredential,
   verifyingCredentialId,
@@ -54,9 +54,17 @@ export default function SiteAuthCredentialPanel({
             保存 LinuxDO、GitHub、Google 这类用于登录目标站点的身份凭证。
           </div>
         </div>
-        <button type="button" className="btn btn-ghost oauth-outline-button" onClick={onImportLinuxDo}>
-          导入 LinuxDO 凭证
-        </button>
+        <div className="oauth-site-auth-import-actions">
+          <button type="button" className="btn btn-ghost oauth-outline-button" onClick={() => onImportCredential('linuxdo')}>
+            导入 LinuxDO 凭证 · LinuxDO Cookie
+          </button>
+          <button type="button" className="btn btn-ghost oauth-outline-button" onClick={() => onImportCredential('github')}>
+            GitHub Token
+          </button>
+          <button type="button" className="btn btn-ghost oauth-outline-button" onClick={() => onImportCredential('google')}>
+            Google Token
+          </button>
+        </div>
       </div>
 
       <div className="oauth-auth-provider-strip" aria-label="计划支持的第三方登录 Provider">

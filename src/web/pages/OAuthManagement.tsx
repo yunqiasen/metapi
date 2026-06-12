@@ -37,6 +37,25 @@ const POLL_INTERVAL_MS = 1500;
 const CONNECTION_PAGE_LIMIT = 200;
 const AUTO_REFRESH_OPTIONS = [0, 5, 10, 15, 30] as const;
 
+type SiteAuthImportProvider = 'linuxdo' | 'github' | 'google';
+
+function normalizeSiteAuthImportProvider(provider: string): SiteAuthImportProvider {
+  if (provider === 'github' || provider === 'google') return provider;
+  return 'linuxdo';
+}
+
+function resolveSiteAuthImportProviderLabel(provider: SiteAuthImportProvider): string {
+  if (provider === 'github') return 'GitHub Token';
+  if (provider === 'google') return 'Google Token';
+  return 'LinuxDO Cookie';
+}
+
+function resolveSiteAuthImportSecretPlaceholder(provider: SiteAuthImportProvider): string {
+  if (provider === 'github') return '粘贴 GitHub access token';
+  if (provider === 'google') return '粘贴 Google OAuth access token';
+  return '粘贴 ld_auth_session=...';
+}
+
 type ActiveSession = {
   provider: string;
   state: string;
@@ -637,6 +656,7 @@ export default function OAuthManagement() {
   const [siteAuthProviders, setSiteAuthProviders] = useState<SiteAuthProviderInfo[]>([]);
   const [siteAuthCredentials, setSiteAuthCredentials] = useState<SiteAuthCredentialInfo[]>([]);
   const [siteAuthImportOpen, setSiteAuthImportOpen] = useState(false);
+  const [siteAuthImportProvider, setSiteAuthImportProvider] = useState<SiteAuthImportProvider>('linuxdo');
   const [siteAuthImportLabel, setSiteAuthImportLabel] = useState('');
   const [siteAuthCaptureText, setSiteAuthCaptureText] = useState('');
   const [siteAuthImportCookie, setSiteAuthImportCookie] = useState('');
@@ -812,7 +832,8 @@ export default function OAuthManagement() {
     }
   }, [loadConnections, loadSiteAuthCredentials]);
 
-  const openSiteAuthImportModal = useCallback(() => {
+  const openSiteAuthImportModal = useCallback((provider: string = 'linuxdo') => {
+    setSiteAuthImportProvider(normalizeSiteAuthImportProvider(provider));
     setSiteAuthImportLabel('');
     setSiteAuthCaptureText('');
     setSiteAuthImportCookie('');
@@ -822,6 +843,7 @@ export default function OAuthManagement() {
   const closeSiteAuthImportModal = useCallback(() => {
     if (siteAuthImporting || siteAuthCaptureParsing) return;
     setSiteAuthImportOpen(false);
+    setSiteAuthImportProvider('linuxdo');
     setSiteAuthImportLabel('');
     setSiteAuthCaptureText('');
     setSiteAuthImportCookie('');
@@ -837,51 +859,54 @@ export default function OAuthManagement() {
     try {
       const result = await api.parseSiteAuthCredentialCapture({
         text,
-        defaultProvider: 'linuxdo',
+        defaultProvider: siteAuthImportProvider,
       });
       const cookie = typeof result.parsed?.payload?.cookie === 'string'
         ? result.parsed.payload.cookie.trim()
         : '';
-      if (result.parsed?.provider !== 'linuxdo' || result.parsed?.credentialType !== 'cookie' || !cookie) {
-        toast.error('未解析到 LinuxDO Cookie');
+      if (result.parsed?.provider !== siteAuthImportProvider || result.parsed?.credentialType !== 'cookie' || !cookie) {
+        toast.error(`未解析到 ${resolveSiteAuthImportProviderLabel(siteAuthImportProvider)}`);
         return;
       }
       setSiteAuthImportCookie(cookie);
-      toast.success('已解析 LinuxDO Cookie');
+      toast.success(`已解析 ${resolveSiteAuthImportProviderLabel(siteAuthImportProvider)}`);
     } catch (error: any) {
       toast.error(error?.message || '浏览器辅助内容解析失败');
     } finally {
       setSiteAuthCaptureParsing(false);
     }
-  }, [siteAuthCaptureText, toast]);
+  }, [siteAuthCaptureText, siteAuthImportProvider, toast]);
 
   const handleImportLinuxDoCredential = useCallback(async () => {
-    const cookie = siteAuthImportCookie.trim();
-    if (!cookie) {
-      toast.error('请先填写 LinuxDO Cookie');
+    const secret = siteAuthImportCookie.trim();
+    if (!secret) {
+      toast.error(`请先填写 ${resolveSiteAuthImportProviderLabel(siteAuthImportProvider)}`);
       return;
     }
+    const provider = siteAuthImportProvider;
+    const credentialType = provider === 'linuxdo' ? 'cookie' : 'oauth_token';
     setSiteAuthImporting(true);
     try {
       await api.importSiteAuthCredential({
-        provider: 'linuxdo',
-        label: siteAuthImportLabel.trim() || 'LinuxDO 手动凭证',
-        credentialType: 'cookie',
-        payload: { cookie },
+        provider,
+        label: siteAuthImportLabel.trim() || `${resolveSiteAuthImportProviderLabel(provider)} 手动凭证`,
+        credentialType,
+        payload: provider === 'linuxdo' ? { cookie: secret } : { accessToken: secret },
         metadata: { source: 'manual-ui' },
       });
       await loadSiteAuthCredentials();
       setSiteAuthImportOpen(false);
+      setSiteAuthImportProvider('linuxdo');
       setSiteAuthImportLabel('');
       setSiteAuthCaptureText('');
       setSiteAuthImportCookie('');
-      toast.success('LinuxDO 凭证已保存');
+      toast.success(`${resolveSiteAuthImportProviderLabel(provider)} 凭证已保存`);
     } catch (error: any) {
-      toast.error(error?.message || 'LinuxDO 凭证导入失败');
+      toast.error(error?.message || `${resolveSiteAuthImportProviderLabel(provider)} 凭证导入失败`);
     } finally {
       setSiteAuthImporting(false);
     }
-  }, [loadSiteAuthCredentials, siteAuthImportCookie, siteAuthImportLabel, toast]);
+  }, [loadSiteAuthCredentials, siteAuthImportCookie, siteAuthImportLabel, siteAuthImportProvider, toast]);
 
   const handleVerifySiteAuthCredential = useCallback(async (credentialId: number) => {
     setVerifyingSiteAuthCredentialId(credentialId);
@@ -2280,7 +2305,7 @@ export default function OAuthManagement() {
           providers={siteAuthProviders}
           credentials={siteAuthCredentials}
           loaded={loaded}
-          onImportLinuxDo={openSiteAuthImportModal}
+          onImportCredential={openSiteAuthImportModal}
           onVerifyCredential={handleVerifySiteAuthCredential}
           onDeleteCredential={handleDeleteSiteAuthCredential}
           verifyingCredentialId={verifyingSiteAuthCredentialId}
@@ -2290,7 +2315,7 @@ export default function OAuthManagement() {
       <CenteredModal
         open={siteAuthImportOpen}
         onClose={closeSiteAuthImportModal}
-        title="导入 LinuxDO 凭证"
+        title={`导入 ${resolveSiteAuthImportProviderLabel(siteAuthImportProvider)} 凭证`}
         maxWidth={560}
         footer={(
           <>
@@ -2312,7 +2337,7 @@ export default function OAuthManagement() {
               data-site-auth-import="label"
               value={siteAuthImportLabel}
               onChange={(event) => setSiteAuthImportLabel(event.target.value)}
-              placeholder="LinuxDO 手动凭证"
+              placeholder={`${resolveSiteAuthImportProviderLabel(siteAuthImportProvider)} 手动凭证`}
             />
           </div>
           <div className="oauth-form-field">
@@ -2338,17 +2363,17 @@ export default function OAuthManagement() {
             </button>
           </div>
           <div className="oauth-form-field">
-            <div className="oauth-field-label">LinuxDO Cookie</div>
+            <div className="oauth-field-label">{resolveSiteAuthImportProviderLabel(siteAuthImportProvider)}</div>
             <textarea
               className="oauth-textarea oauth-mono"
               data-site-auth-import="cookie"
               value={siteAuthImportCookie}
               onChange={(event) => setSiteAuthImportCookie(event.target.value)}
-              placeholder="粘贴 ld_auth_session=..."
+              placeholder={resolveSiteAuthImportSecretPlaceholder(siteAuthImportProvider)}
               rows={4}
             />
             <div className="oauth-form-note">
-              凭证会加密落库，列表只显示脱敏摘要。后续添加 Session 连接时会复用这里保存的 LinuxDO 登录态。
+              凭证会加密落库，列表只显示脱敏摘要。后续添加 Session 连接时会复用这里保存的第三方登录凭证。
             </div>
           </div>
         </div>

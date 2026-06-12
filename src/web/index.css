@@ -3121,6 +3121,13 @@ textarea {
   font-weight: 600;
 }
 
+.oauth-site-auth-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .oauth-site-auth-empty {
   min-height: 260px;
   justify-content: center;

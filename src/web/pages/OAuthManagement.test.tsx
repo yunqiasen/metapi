@@ -380,6 +380,81 @@ describe('OAuthManagement page', () => {
     }
   });
 
+  it.each([
+    ['GitHub Token', 'github', 'ghp-secret-token'],
+    ['Google Token', 'google', 'ya29.secret-token'],
+  ])('imports a %s credential from the site auth panel', async (buttonLabel, provider, token) => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getSiteAuthCredentials
+      .mockResolvedValueOnce({ items: [], total: 0 })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: 22,
+            provider,
+            label: `${buttonLabel} 手动凭证`,
+            credentialType: 'oauth_token',
+            status: 'active',
+            metadata: { source: 'manual-ui' },
+          },
+        ],
+        total: 1,
+      });
+    apiMock.importSiteAuthCredential.mockResolvedValue({
+      success: true,
+      item: {
+        id: 22,
+        provider,
+        label: `${buttonLabel} 手动凭证`,
+        credentialType: 'oauth_token',
+        status: 'active',
+        metadata: { source: 'manual-ui' },
+      },
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain(buttonLabel);
+      });
+
+      await clickButton(root!, buttonLabel);
+      const secretInput = root.root.find((node) => node.type === 'textarea' && node.props['data-site-auth-import'] === 'cookie');
+      await act(async () => {
+        secretInput.props.onChange({ target: { value: token } });
+      });
+      await clickButton(root!, '保存凭证');
+
+      expect(apiMock.importSiteAuthCredential).toHaveBeenCalledWith({
+        provider,
+        label: `${buttonLabel} 手动凭证`,
+        credentialType: 'oauth_token',
+        payload: { accessToken: token },
+        metadata: { source: 'manual-ui' },
+      });
+      expect(apiMock.getSiteAuthCredentials).toHaveBeenCalledTimes(2);
+    } finally {
+      root?.unmount();
+    }
+  });
+
   it('parses browser assisted LinuxDO cookie text into the import form', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({

@@ -640,6 +640,7 @@ export default function OAuthManagement() {
   const [siteAuthImportLabel, setSiteAuthImportLabel] = useState('');
   const [siteAuthImportCookie, setSiteAuthImportCookie] = useState('');
   const [siteAuthImporting, setSiteAuthImporting] = useState(false);
+  const [verifyingSiteAuthCredentialId, setVerifyingSiteAuthCredentialId] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [sessionFeedback, setSessionFeedback] = useState<SessionFeedback | null>(null);
   const [actionLoadingKey, setActionLoadingKey] = useState('');
@@ -848,6 +849,23 @@ export default function OAuthManagement() {
       setSiteAuthImporting(false);
     }
   }, [loadSiteAuthCredentials, siteAuthImportCookie, siteAuthImportLabel, toast]);
+
+  const handleVerifySiteAuthCredential = useCallback(async (credentialId: number) => {
+    setVerifyingSiteAuthCredentialId(credentialId);
+    try {
+      const result = await api.verifySiteAuthCredential(credentialId);
+      await loadSiteAuthCredentials();
+      if (result.success) {
+        toast.success('第三方登录凭证验证成功');
+      } else {
+        toast.error(result.message || '第三方登录凭证验证失败');
+      }
+    } catch (error: any) {
+      toast.error(error?.message || '第三方登录凭证验证失败');
+    } finally {
+      setVerifyingSiteAuthCredentialId(null);
+    }
+  }, [loadSiteAuthCredentials, toast]);
 
   useEffect(() => {
     void load();
@@ -2219,6 +2237,8 @@ export default function OAuthManagement() {
           credentials={siteAuthCredentials}
           loaded={loaded}
           onImportLinuxDo={openSiteAuthImportModal}
+          onVerifyCredential={handleVerifySiteAuthCredential}
+          verifyingCredentialId={verifyingSiteAuthCredentialId}
         />
       </div>
 

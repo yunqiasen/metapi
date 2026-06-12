@@ -5,6 +5,8 @@ type SiteAuthCredentialPanelProps = {
   credentials: SiteAuthCredentialInfo[];
   loaded: boolean;
   onImportLinuxDo: () => void;
+  onVerifyCredential: (credentialId: number) => void;
+  verifyingCredentialId?: number | null;
 };
 
 function resolveCredentialTypeLabel(value: string): string {
@@ -30,6 +32,8 @@ export default function SiteAuthCredentialPanel({
   credentials,
   loaded,
   onImportLinuxDo,
+  onVerifyCredential,
+  verifyingCredentialId,
 }: SiteAuthCredentialPanelProps) {
   const visibleProviders = providers.length > 0
     ? providers
@@ -101,6 +105,14 @@ export default function SiteAuthCredentialPanel({
                 {credential.expiresAt ? (
                   <span className="oauth-cell-tertiary">过期 {new Date(credential.expiresAt).toLocaleDateString()}</span>
                 ) : null}
+                <button
+                  type="button"
+                  className="btn btn-link btn-link-info oauth-site-auth-verify"
+                  onClick={() => onVerifyCredential(credential.id)}
+                  disabled={verifyingCredentialId === credential.id}
+                >
+                  {verifyingCredentialId === credential.id ? '验证中...' : '验证'}
+                </button>
               </div>
             </div>
           ))}

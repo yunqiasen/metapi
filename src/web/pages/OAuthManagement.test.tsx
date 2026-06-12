@@ -22,6 +22,7 @@ const { apiMock, openMock, focusMock, confirmMock, promptMock } = vi.hoisted(() 
     getSiteAuthProviders: vi.fn(),
     getSiteAuthCredentials: vi.fn(),
     importSiteAuthCredential: vi.fn(),
+    verifySiteAuthCredential: vi.fn(),
     getAccountModels: vi.fn(),
     checkModels: vi.fn(),
   },
@@ -372,6 +373,87 @@ describe('OAuthManagement page', () => {
       });
       expect(apiMock.getSiteAuthCredentials).toHaveBeenCalledTimes(2);
       expect(collectText(root.root)).toContain('LinuxDO 手动凭证');
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('verifies a site auth credential from the credential panel', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getSiteAuthCredentials
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: 12,
+            provider: 'linuxdo',
+            label: 'LinuxDO 手动凭证',
+            subject: 'linuxdo-user-42',
+            credentialType: 'cookie',
+            status: 'invalid',
+            lastError: 'previous failure',
+            metadata: { source: 'manual-ui' },
+          },
+        ],
+        total: 1,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: 12,
+            provider: 'linuxdo',
+            label: 'LinuxDO 手动凭证',
+            subject: '42',
+            username: 'linuxdo-user',
+            credentialType: 'cookie',
+            status: 'active',
+            metadata: { source: 'manual-ui' },
+          },
+        ],
+        total: 1,
+      });
+    apiMock.verifySiteAuthCredential.mockResolvedValue({
+      success: true,
+      item: {
+        id: 12,
+        provider: 'linuxdo',
+        label: 'LinuxDO 手动凭证',
+        subject: '42',
+        username: 'linuxdo-user',
+        credentialType: 'cookie',
+        status: 'active',
+        metadata: { source: 'manual-ui' },
+      },
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('LinuxDO 手动凭证');
+        expect(collectText(root!.root)).toContain('无效');
+      });
+
+      await clickButton(root!, '验证');
+
+      expect(apiMock.verifySiteAuthCredential).toHaveBeenCalledWith(12);
+      expect(apiMock.getSiteAuthCredentials).toHaveBeenCalledTimes(2);
+      expect(collectText(root.root)).toContain('有效');
     } finally {
       root?.unmount();
     }

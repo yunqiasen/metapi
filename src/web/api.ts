@@ -794,6 +794,12 @@ export type SiteAuthCredentialImportResponse = {
   item: SiteAuthCredentialInfo;
 };
 
+export type SiteAuthCredentialVerifyResponse = {
+  success: boolean;
+  item: SiteAuthCredentialInfo;
+  message?: string;
+};
+
 export type DownstreamApiKeyTrendBucket = {
   startUtc: string | null;
   totalRequests: number;
@@ -1268,6 +1274,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }) as Promise<SiteAuthCredentialImportResponse>,
+  verifySiteAuthCredential: (credentialId: number) =>
+    request(`/api/site-auth/credentials/${credentialId}/verify`, {
+      method: "POST",
+    }) as Promise<SiteAuthCredentialVerifyResponse>,
 
   // Events
   getEvents: (params?: string) =>

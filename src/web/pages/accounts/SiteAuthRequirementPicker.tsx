@@ -10,6 +10,8 @@ type SiteAuthRequirementPickerProps = {
   loggingInCredentialId?: number | null;
   onAddCredential: (provider: string) => void;
   onUseCredential: (credential: SiteAuthCredentialInfo) => void;
+  onOpenBrowserCredentialCapture: () => void;
+  onUseAccountPasswordLogin: () => void;
 };
 
 export default function SiteAuthRequirementPicker({
@@ -18,6 +20,8 @@ export default function SiteAuthRequirementPicker({
   loggingInCredentialId = null,
   onAddCredential,
   onUseCredential,
+  onOpenBrowserCredentialCapture,
+  onUseAccountPasswordLogin,
 }: SiteAuthRequirementPickerProps) {
   if (loading) {
     return (
@@ -30,9 +34,34 @@ export default function SiteAuthRequirementPicker({
   const requirements = data?.requirements || [];
   if (!data?.hasThirdPartyLogin || requirements.length === 0) return null;
 
+  const providerLabels = requirements.map((item) => item.label).join(' / ');
+
   return (
     <div className="site-auth-picker">
-      <div className="site-auth-picker-title">该站点支持第三方登录</div>
+      <div className="site-auth-picker-header">
+        <div>
+          <div className="site-auth-picker-title">第三方授权登录</div>
+          <div className="site-auth-picker-subtitle">
+            检测到该站点支持 {providerLabels} 登录。可以使用 OAuth 管理中保存的凭证，也可以直接输入目标站点账号密码登录。
+          </div>
+        </div>
+        <div className="site-auth-picker-toolbar">
+          <button
+            type="button"
+            className="btn btn-ghost site-auth-provider-action"
+            onClick={onUseAccountPasswordLogin}
+          >
+            账号密码登录该站点
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary site-auth-provider-action"
+            onClick={onOpenBrowserCredentialCapture}
+          >
+            自动获取浏览器凭证和 UserID
+          </button>
+        </div>
+      </div>
       <div className="site-auth-provider-list">
         {requirements.map((requirement) => {
           const credentials = requirement.availableCredentials || [];

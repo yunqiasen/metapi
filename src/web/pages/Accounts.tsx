@@ -23,6 +23,10 @@ import {
   normalizeVerifyFailureMessage,
 } from "./helpers/accountVerifyFeedback.js";
 import {
+  browserSessionCredentialCaptureScript,
+  parseBrowserSessionCredentialCapture,
+} from "./helpers/browserSessionCredential.js";
+import {
   isTruthyFlag,
   parsePositiveInt,
   resolveAccountCredentialMode,
@@ -138,6 +142,12 @@ export default function Accounts() {
     useState<number | null>(null);
   const [siteAuthLoginCredentialId, setSiteAuthLoginCredentialId] =
     useState<number | null>(null);
+  const [browserCredentialCaptureOpen, setBrowserCredentialCaptureOpen] =
+    useState(false);
+  const [browserCredentialCaptureText, setBrowserCredentialCaptureText] =
+    useState("");
+  const [browserCredentialCaptureError, setBrowserCredentialCaptureError] =
+    useState("");
   const [createIntentPresetId, setCreateIntentPresetId] = useState<
     string | null
   >(null);
@@ -335,6 +345,45 @@ export default function Accounts() {
     }
   };
 
+
+  const openBrowserCredentialCapture = () => {
+    setBrowserCredentialCaptureText("");
+    setBrowserCredentialCaptureError("");
+    setBrowserCredentialCaptureOpen(true);
+  };
+
+  const closeBrowserCredentialCapture = () => {
+    setBrowserCredentialCaptureOpen(false);
+    setBrowserCredentialCaptureError("");
+  };
+
+  const handleUseAccountPasswordLogin = () => {
+    setAddMode("login");
+    setVerifyResult(null);
+    setLoginForm((current) => ({
+      ...current,
+      siteId: tokenForm.siteId || current.siteId,
+    }));
+  };
+
+  const applyBrowserCredentialCapture = () => {
+    try {
+      const parsed = parseBrowserSessionCredentialCapture(browserCredentialCaptureText);
+      setTokenForm((current) => ({
+        ...current,
+        accessToken: parsed.accessToken,
+        platformUserId: parsed.platformUserId || current.platformUserId,
+        username: parsed.username || current.username,
+      }));
+      setVerifyResult(null);
+      setBrowserCredentialCaptureOpen(false);
+      setBrowserCredentialCaptureError("");
+      toast.success("已填入浏览器 Session 凭证和 UserID");
+    } catch (error: any) {
+      setBrowserCredentialCaptureError(error?.message || "浏览器凭证解析失败");
+    }
+  };
+
   const resetAddForms = (
     credentialMode: "session" | "apikey" = activeAddCredentialMode,
   ) => {
@@ -348,6 +397,9 @@ export default function Accounts() {
     setSiteAuthRequirementSiteId(null);
     setSiteAuthRequirementsLoading(false);
     setSiteAuthLoginCredentialId(null);
+    setBrowserCredentialCaptureOpen(false);
+    setBrowserCredentialCaptureText("");
+    setBrowserCredentialCaptureError("");
   };
 
   const closeAddPanel = () => {
@@ -1791,6 +1843,8 @@ export default function Accounts() {
                       loggingInCredentialId={siteAuthLoginCredentialId}
                       onAddCredential={handleAddSiteAuthCredential}
                       onUseCredential={handleUseSiteAuthCredential}
+                      onOpenBrowserCredentialCapture={openBrowserCredentialCapture}
+                      onUseAccountPasswordLogin={handleUseAccountPasswordLogin}
                     />
                     <input
                       placeholder="连接名称（可选）"
@@ -2469,6 +2523,63 @@ export default function Accounts() {
               </div>
             )}
           </CenteredModal>
+
+          <CenteredModal
+            open={browserCredentialCaptureOpen}
+            onClose={closeBrowserCredentialCapture}
+            title="浏览器凭证获取"
+            maxWidth={760}
+            bodyStyle={{ display: "flex", flexDirection: "column", gap: 12 }}
+            footer={
+              <>
+                <button onClick={closeBrowserCredentialCapture} className="btn btn-ghost">
+                  取消
+                </button>
+                <button
+                  onClick={applyBrowserCredentialCapture}
+                  className="btn btn-primary"
+                  disabled={!browserCredentialCaptureText.trim()}
+                >
+                  填入 Session
+                </button>
+              </>
+            }
+          >
+            <div className="info-tip">
+              在目标站点已登录的浏览器页打开 DevTools Console，粘贴下面脚本。脚本会读取该站点 localStorage / sessionStorage / document.cookie，并把结果复制到剪贴板。
+            </div>
+            <textarea
+              readOnly
+              value={browserSessionCredentialCaptureScript}
+              style={{
+                ...inputStyle,
+                height: 132,
+                resize: "vertical" as const,
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+              }}
+            />
+            <textarea
+              placeholder="粘贴浏览器脚本输出 JSON，或直接粘贴 session=...; user_id=... Cookie"
+              value={browserCredentialCaptureText}
+              onChange={(event) => {
+                setBrowserCredentialCaptureText(event.target.value);
+                setBrowserCredentialCaptureError("");
+              }}
+              style={{
+                ...inputStyle,
+                height: 96,
+                resize: "vertical" as const,
+                fontFamily: "var(--font-mono)",
+              }}
+            />
+            {browserCredentialCaptureError ? (
+              <div className="alert alert-error animate-scale-in">
+                <div className="alert-title">{browserCredentialCaptureError}</div>
+              </div>
+            ) : null}
+          </CenteredModal>
+
 
           {activeSegment === "session" && (
             <CenteredModal

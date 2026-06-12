@@ -115,7 +115,7 @@ describe('Accounts site auth requirements', () => {
         await flushMicrotasks();
         const text = collectText(root.root);
         expect(apiMock.getSiteAuthRequirements).toHaveBeenCalledWith(31);
-        expect(text).toContain('该站点支持第三方登录');
+        expect(text).toContain('第三方授权登录');
         expect(text).toContain('LinuxDO');
         expect(text).toContain('主 LinuxDO');
         expect(text).toContain('使用该凭证登录站点');
@@ -124,4 +124,90 @@ describe('Accounts site auth requirements', () => {
       root?.unmount();
     }
   });
+
+  it('shows a visible third-party login workspace and browser credential capture entry after selecting a site', async () => {
+    const root = await renderAccountsPage();
+    try {
+      await clickButton(root, '+ 添加连接');
+
+      const selects = root.root.findAllByType(ModernSelect);
+      const siteSelect = selects[1];
+      await act(async () => {
+        siteSelect?.props.onChange('31');
+      });
+      await flushMicrotasks();
+
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        const text = collectText(root.root);
+        expect(text).toContain('第三方授权登录');
+        expect(text).toContain('检测到该站点支持 LinuxDO 登录');
+        expect(text).toContain('也可以直接输入目标站点账号密码登录');
+        expect(text).toContain('自动获取浏览器凭证和 UserID');
+      });
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('fills the Session form from browser credential capture output', async () => {
+    const root = await renderAccountsPage();
+    try {
+      await clickButton(root, '+ 添加连接');
+
+      const selects = root.root.findAllByType(ModernSelect);
+      const siteSelect = selects[1];
+      await act(async () => {
+        siteSelect?.props.onChange('31');
+      });
+      await flushMicrotasks();
+
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root.root)).toContain('自动获取浏览器凭证和 UserID');
+      });
+
+      await clickButton(root, '自动获取浏览器凭证和 UserID');
+      expect(collectText(root.root)).toContain('浏览器凭证获取');
+
+      const captureTextarea = root.root.find((node) => (
+        node.type === 'textarea'
+        && typeof node.props.placeholder === 'string'
+        && node.props.placeholder.includes('粘贴浏览器脚本输出')
+      ));
+      await act(async () => {
+        captureTextarea.props.onChange({
+          target: {
+            value: JSON.stringify({
+              accessToken: 'browser-session-token',
+              userId: 2468,
+              username: 'browser-user',
+            }),
+          },
+        });
+      });
+
+      await clickButton(root, '填入 Session');
+
+      const tokenTextarea = root.root.find((node) => (
+        node.type === 'textarea'
+        && typeof node.props.placeholder === 'string'
+        && node.props.placeholder.includes('Session Access Token')
+      ));
+      const userIdInput = root.root.find((node) => (
+        node.type === 'input'
+        && node.props.placeholder === '用户 ID（可选）'
+      ));
+      const nameInput = root.root.find((node) => (
+        node.type === 'input'
+        && node.props.placeholder === '连接名称（可选）'
+      ));
+      expect(tokenTextarea.props.value).toBe('browser-session-token');
+      expect(userIdInput.props.value).toBe('2468');
+      expect(nameInput.props.value).toBe('browser-user');
+    } finally {
+      root?.unmount();
+    }
+  });
+
 });

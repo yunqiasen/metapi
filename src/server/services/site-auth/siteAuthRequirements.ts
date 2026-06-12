@@ -1,3 +1,5 @@
+import { fetch } from 'undici';
+import { withSiteRecordProxyRequestInit } from '../siteProxy.js';
 import { getSiteAuthProviderDefinition } from './providers.js';
 import type {
   SiteAuthProviderId,
@@ -10,6 +12,9 @@ type SiteAuthRequirementSiteInput = {
   name?: string | null;
   url?: string | null;
   platform?: string | null;
+  proxyUrl?: string | null;
+  useSystemProxy?: boolean | null;
+  customHeaders?: string | null;
   metadata?: Record<string, unknown> | string | null;
 };
 
@@ -17,6 +22,9 @@ type ResolveSiteAuthRequirementsInput = {
   site: SiteAuthRequirementSiteInput;
   html?: string | null;
 };
+
+const SITE_AUTH_REQUIREMENTS_HTML_TIMEOUT_MS = 10_000;
+const SITE_AUTH_REQUIREMENTS_HTML_MAX_BYTES = 256_000;
 
 function parseMetadata(value: SiteAuthRequirementSiteInput['metadata']): Record<string, unknown> {
   if (!value) return {};
@@ -88,4 +96,39 @@ export function resolveSiteAuthRequirements(input: ResolveSiteAuthRequirementsIn
     hasThirdPartyLogin: requirements.length > 0,
     requirements,
   };
+}
+
+async function fetchSiteLoginHtml(site: SiteAuthRequirementSiteInput): Promise<string | null> {
+  const url = typeof site.url === 'string' ? site.url.trim() : '';
+  if (!url) return null;
+
+  try {
+    const response = await fetch(url, withSiteRecordProxyRequestInit(site, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.1',
+        'User-Agent': 'Metapi site-auth requirements probe',
+      },
+      signal: AbortSignal.timeout(SITE_AUTH_REQUIREMENTS_HTML_TIMEOUT_MS),
+    }));
+    if (!response.ok) return null;
+
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType && !/text\/html|application\/xhtml\+xml/i.test(contentType)) return null;
+
+    const html = await response.text();
+    return html.slice(0, SITE_AUTH_REQUIREMENTS_HTML_MAX_BYTES);
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveSiteAuthRequirementsForSite(
+  site: SiteAuthRequirementSiteInput,
+): Promise<SiteAuthRequirementResult> {
+  const explicit = resolveSiteAuthRequirements({ site });
+  if (explicit.hasThirdPartyLogin) return explicit;
+
+  const html = await fetchSiteLoginHtml(site);
+  return resolveSiteAuthRequirements({ site, html });
 }

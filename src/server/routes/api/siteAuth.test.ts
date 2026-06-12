@@ -39,6 +39,7 @@ describe('site auth routes', () => {
   beforeEach(async () => {
     fetchMock.mockReset();
     await db.delete(schema.siteAuthCredentials).run();
+    await db.delete(schema.sites).run();
   });
 
   it('lists supported third-party login providers', async () => {
@@ -180,6 +181,51 @@ describe('site auth routes', () => {
       },
     });
     expect(response.json().item.lastVerifiedAt).toEqual(expect.any(String));
+  });
+
+  it('returns auth-requirements with matching credential summaries', async () => {
+    const [site] = await db.insert(schema.sites).values({
+      name: 'LinuxDO Login Site',
+      url: 'https://target.example.com',
+      platform: 'new-api',
+      status: 'active',
+    }).returning();
+    const credential = await vault.createSiteAuthCredential({
+      provider: 'linuxdo',
+      label: '主 LinuxDO',
+      subject: '42',
+      credentialType: 'cookie',
+      payload: { cookie: 'ld_auth_session=secret' },
+      status: 'active',
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/html; charset=utf-8' },
+      text: async () => '<html><body><button>使用 LinuxDO 继续</button></body></html>',
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/sites/${site.id}/auth-requirements`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain('ld_auth_session=secret');
+    expect(response.json()).toMatchObject({
+      siteId: site.id,
+      hasThirdPartyLogin: true,
+      requirements: [
+        {
+          provider: 'linuxdo',
+          label: 'LinuxDO',
+          required: true,
+          confidence: 'detected',
+          reason: expect.any(String),
+          availableCredentials: [expect.objectContaining({ id: credential.id, label: '主 LinuxDO' })],
+        },
+      ],
+    });
   });
 
   it('deletes a credential summary by id', async () => {

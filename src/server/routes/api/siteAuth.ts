@@ -1,6 +1,8 @@
+import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { parseSiteAuthCredentialImportPayload } from '../../contracts/siteAuthRoutePayloads.js';
 import { createRateLimitGuard } from '../../middleware/requestRateLimit.js';
+import { db, schema } from '../../db/index.js';
 import {
   createSiteAuthCredential,
   deleteSiteAuthCredential,
@@ -8,6 +10,7 @@ import {
 } from '../../services/site-auth/credentialVault.js';
 import { verifySiteAuthCredential } from '../../services/site-auth/credentialVerifier.js';
 import { listSiteAuthProviderDefinitions } from '../../services/site-auth/providers.js';
+import { resolveSiteAuthRequirementsForSite } from '../../services/site-auth/siteAuthRequirements.js';
 
 const limitSiteAuthProviderRead = createRateLimitGuard({
   bucket: 'site-auth-provider-read',
@@ -91,6 +94,35 @@ export async function siteAuthRoutes(app: FastifyInstance) {
           message: error?.message || 'site auth credential import failed',
         });
       }
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    '/api/sites/:id/auth-requirements',
+    { preHandler: [limitSiteAuthCredentialRead] },
+    async (request, reply) => {
+      const siteId = parsePositiveInteger(request.params.id);
+      if (!siteId) {
+        return reply.code(400).send({ success: false, message: 'invalid site id' });
+      }
+
+      const site = await db.select().from(schema.sites).where(eq(schema.sites.id, siteId)).get();
+      if (!site) {
+        return reply.code(404).send({ success: false, message: 'site not found' });
+      }
+
+      const detected = await resolveSiteAuthRequirementsForSite(site);
+      const credentials = await listSiteAuthCredentials();
+      return {
+        siteId,
+        hasThirdPartyLogin: detected.hasThirdPartyLogin,
+        requirements: detected.requirements.map((requirement) => ({
+          ...requirement,
+          availableCredentials: credentials.filter((credential) => (
+            credential.provider === requirement.provider && credential.status === 'active'
+          )),
+        })),
+      };
     },
   );
 

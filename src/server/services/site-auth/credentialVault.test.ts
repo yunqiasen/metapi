@@ -76,4 +76,17 @@ describe('site auth credential vault', () => {
       userId: 42,
     });
   });
+
+  it('deletes a site auth credential without exposing its payload', async () => {
+    const created = await vault.createSiteAuthCredential({
+      provider: 'linuxdo',
+      label: '删除测试',
+      credentialType: 'cookie',
+      payload: { cookie: 'ld_auth_session=delete-me' },
+    });
+
+    await expect(vault.deleteSiteAuthCredential(created.id)).resolves.toBe(true);
+    await expect(vault.getSiteAuthCredential(created.id)).resolves.toBeNull();
+    await expect(vault.getSiteAuthCredentialPayload(created.id)).resolves.toBeNull();
+  });
 });

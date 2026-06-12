@@ -1278,6 +1278,10 @@ export const api = {
     request(`/api/site-auth/credentials/${credentialId}/verify`, {
       method: "POST",
     }) as Promise<SiteAuthCredentialVerifyResponse>,
+  deleteSiteAuthCredential: (credentialId: number) =>
+    request(`/api/site-auth/credentials/${credentialId}`, {
+      method: "DELETE",
+    }) as Promise<{ success: boolean }>,
 
   // Events
   getEvents: (params?: string) =>

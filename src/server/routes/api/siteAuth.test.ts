@@ -181,4 +181,24 @@ describe('site auth routes', () => {
     });
     expect(response.json().item.lastVerifiedAt).toEqual(expect.any(String));
   });
+
+  it('deletes a credential summary by id', async () => {
+    const created = await vault.createSiteAuthCredential({
+      provider: 'linuxdo',
+      label: '删除路由测试',
+      credentialType: 'cookie',
+      payload: { cookie: 'ld_auth_session=delete-route' },
+    });
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/api/site-auth/credentials/${created.id}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ success: true });
+
+    const listResponse = await app.inject({ method: 'GET', url: '/api/site-auth/credentials' });
+    expect(listResponse.json()).toMatchObject({ items: [], total: 0 });
+  });
 });

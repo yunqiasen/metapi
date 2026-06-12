@@ -202,6 +202,16 @@ export async function updateSiteAuthCredential(
   return getSiteAuthCredential(id);
 }
 
+export async function deleteSiteAuthCredential(id: number): Promise<boolean> {
+  const existing = await getSiteAuthCredential(id);
+  if (!existing) return false;
+  await db
+    .delete(schema.siteAuthCredentials)
+    .where(eq(schema.siteAuthCredentials.id, id))
+    .run();
+  return true;
+}
+
 export async function getSiteAuthCredentialPayload(id: number): Promise<SiteAuthCredentialPayload | null> {
   const row = await db
     .select()

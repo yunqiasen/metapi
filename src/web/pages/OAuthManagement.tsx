@@ -867,6 +867,17 @@ export default function OAuthManagement() {
     }
   }, [loadSiteAuthCredentials, toast]);
 
+  const handleDeleteSiteAuthCredential = useCallback(async (credentialId: number) => {
+    if (!window.confirm('确定删除这个第三方登录凭证？')) return;
+    try {
+      await api.deleteSiteAuthCredential(credentialId);
+      await loadSiteAuthCredentials();
+      toast.success('第三方登录凭证已删除');
+    } catch (error: any) {
+      toast.error(error?.message || '第三方登录凭证删除失败');
+    }
+  }, [loadSiteAuthCredentials, toast]);
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -2238,6 +2249,7 @@ export default function OAuthManagement() {
           loaded={loaded}
           onImportLinuxDo={openSiteAuthImportModal}
           onVerifyCredential={handleVerifySiteAuthCredential}
+          onDeleteCredential={handleDeleteSiteAuthCredential}
           verifyingCredentialId={verifyingSiteAuthCredentialId}
         />
       </div>

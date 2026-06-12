@@ -23,6 +23,7 @@ const { apiMock, openMock, focusMock, confirmMock, promptMock } = vi.hoisted(() 
     getSiteAuthCredentials: vi.fn(),
     importSiteAuthCredential: vi.fn(),
     verifySiteAuthCredential: vi.fn(),
+    deleteSiteAuthCredential: vi.fn(),
     getAccountModels: vi.fn(),
     checkModels: vi.fn(),
   },
@@ -454,6 +455,68 @@ describe('OAuthManagement page', () => {
       expect(apiMock.verifySiteAuthCredential).toHaveBeenCalledWith(12);
       expect(apiMock.getSiteAuthCredentials).toHaveBeenCalledTimes(2);
       expect(collectText(root.root)).toContain('有效');
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('deletes a site auth credential from the credential panel', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getSiteAuthCredentials
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: 12,
+            provider: 'linuxdo',
+            label: 'LinuxDO 手动凭证',
+            subject: 'linuxdo-user-42',
+            credentialType: 'cookie',
+            status: 'active',
+            metadata: { source: 'manual-ui' },
+          },
+        ],
+        total: 1,
+      })
+      .mockResolvedValueOnce({ items: [], total: 0 });
+    apiMock.deleteSiteAuthCredential.mockResolvedValue({ success: true });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('LinuxDO 手动凭证');
+      });
+
+      const deleteButton = root.root.find((node) => (
+        node.type === 'button'
+        && typeof node.props.className === 'string'
+        && node.props.className.split(' ').includes('oauth-site-auth-delete')
+      ));
+      await act(async () => {
+        await deleteButton.props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(confirmMock).toHaveBeenCalledWith(expect.stringContaining('删除'));
+      expect(apiMock.deleteSiteAuthCredential).toHaveBeenCalledWith(12);
+      expect(apiMock.getSiteAuthCredentials).toHaveBeenCalledTimes(2);
+      expect(collectText(root.root)).toContain('暂无第三方登录凭证');
     } finally {
       root?.unmount();
     }

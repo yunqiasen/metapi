@@ -6,6 +6,7 @@ type SiteAuthCredentialPanelProps = {
   loaded: boolean;
   onImportLinuxDo: () => void;
   onVerifyCredential: (credentialId: number) => void;
+  onDeleteCredential: (credentialId: number) => void;
   verifyingCredentialId?: number | null;
 };
 
@@ -33,6 +34,7 @@ export default function SiteAuthCredentialPanel({
   loaded,
   onImportLinuxDo,
   onVerifyCredential,
+  onDeleteCredential,
   verifyingCredentialId,
 }: SiteAuthCredentialPanelProps) {
   const visibleProviders = providers.length > 0
@@ -112,6 +114,13 @@ export default function SiteAuthCredentialPanel({
                   disabled={verifyingCredentialId === credential.id}
                 >
                   {verifyingCredentialId === credential.id ? '验证中...' : '验证'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-link btn-link-danger oauth-site-auth-delete"
+                  onClick={() => onDeleteCredential(credential.id)}
+                >
+                  删除
                 </button>
               </div>
             </div>

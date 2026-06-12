@@ -3,6 +3,7 @@ import { parseSiteAuthCredentialImportPayload } from '../../contracts/siteAuthRo
 import { createRateLimitGuard } from '../../middleware/requestRateLimit.js';
 import {
   createSiteAuthCredential,
+  deleteSiteAuthCredential,
   listSiteAuthCredentials,
 } from '../../services/site-auth/credentialVault.js';
 import { verifySiteAuthCredential } from '../../services/site-auth/credentialVerifier.js';
@@ -28,6 +29,12 @@ const limitSiteAuthCredentialImport = createRateLimitGuard({
 
 const limitSiteAuthCredentialVerify = createRateLimitGuard({
   bucket: 'site-auth-credential-verify',
+  max: 30,
+  windowMs: 60_000,
+});
+
+const limitSiteAuthCredentialDelete = createRateLimitGuard({
+  bucket: 'site-auth-credential-delete',
   max: 30,
   windowMs: 60_000,
 });
@@ -84,6 +91,23 @@ export async function siteAuthRoutes(app: FastifyInstance) {
           message: error?.message || 'site auth credential import failed',
         });
       }
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    '/api/site-auth/credentials/:id',
+    { preHandler: [limitSiteAuthCredentialDelete] },
+    async (request, reply) => {
+      const credentialId = parsePositiveInteger(request.params.id);
+      if (!credentialId) {
+        return reply.code(400).send({ success: false, message: 'invalid credential id' });
+      }
+
+      const deleted = await deleteSiteAuthCredential(credentialId);
+      if (!deleted) {
+        return reply.code(404).send({ success: false, message: 'site auth credential not found' });
+      }
+      return { success: true };
     },
   );
 

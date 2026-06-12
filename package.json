@@ -63,6 +63,7 @@
     "smoke:db:sqlite": "tsx scripts/dev/db-smoke.ts --db-type sqlite",
     "smoke:db:mysql": "tsx scripts/dev/db-smoke.ts --db-type mysql",
     "smoke:db:postgres": "tsx scripts/dev/db-smoke.ts --db-type postgres",
+    "smoke:fork": "tsx scripts/dev/fork-smoke.ts",
     "test": "vitest run --root .",
     "test:watch": "vitest --root ."
   },

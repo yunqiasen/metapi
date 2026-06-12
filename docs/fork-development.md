@@ -58,6 +58,22 @@ The dev container uses `docker/Dockerfile.dev` for Python/make/g++ native rebuil
 
 Because the repository is bind-mounted, source edits in this directory are reflected inside the dev container. Commit code changes on `Metapi-fork`; do not commit `.env`, `data/`, Cookies, Tokens, callback URLs, or database dumps.
 
+## Deployment smoke check
+
+After a server pulls `Metapi-fork` and starts the container, run a masked smoke check before handing it over:
+
+```bash
+docker compose exec -T metapi npm run smoke:fork
+```
+
+For a remote or non-default URL:
+
+```bash
+docker compose exec -T metapi env METAPI_BASE_URL=http://100.126.43.55:4000 npm run smoke:fork
+```
+
+The check requires `AUTH_TOKEN` in the container environment. It verifies the UI, admin API, third-party provider registry, credential list, and decryptability endpoint. It fails if credential responses expose payload-looking fields or `ld_auth_session=...` material.
+
 ## Provider login credential workflow
 
 Use `Provider 与登录凭证` for two separate things:

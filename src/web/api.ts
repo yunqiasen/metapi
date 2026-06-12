@@ -800,6 +800,21 @@ export type SiteAuthCredentialVerifyResponse = {
   message?: string;
 };
 
+export type SiteAuthRequirementInfo = {
+  provider: string;
+  label: string;
+  required: boolean;
+  confidence: "explicit" | "detected";
+  reason: string;
+  availableCredentials: SiteAuthCredentialInfo[];
+};
+
+export type SiteAuthRequirementsResponse = {
+  siteId: number;
+  hasThirdPartyLogin: boolean;
+  requirements: SiteAuthRequirementInfo[];
+};
+
 export type DownstreamApiKeyTrendBucket = {
   startUtc: string | null;
   totalRequests: number;
@@ -1282,6 +1297,8 @@ export const api = {
     request(`/api/site-auth/credentials/${credentialId}`, {
       method: "DELETE",
     }) as Promise<{ success: boolean }>,
+  getSiteAuthRequirements: (siteId: number) =>
+    request(`/api/sites/${siteId}/auth-requirements`) as Promise<SiteAuthRequirementsResponse>,
 
   // Events
   getEvents: (params?: string) =>

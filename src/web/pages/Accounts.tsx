@@ -1,6 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api } from "../api.js";
+import {
+  api,
+  type SiteAuthCredentialInfo,
+  type SiteAuthRequirementsResponse,
+} from "../api.js";
 import CenteredModal from "../components/CenteredModal.js";
 import ResponsiveFilterPanel from "../components/ResponsiveFilterPanel.js";
 import ResponsiveFormGrid from "../components/ResponsiveFormGrid.js";
@@ -12,6 +16,7 @@ import { useIsMobile } from "../components/useIsMobile.js";
 import DeleteConfirmModal from "../components/DeleteConfirmModal.js";
 import SiteBadgeLink from "../components/SiteBadgeLink.js";
 import AccountModelsModal from "./accounts/AccountModelsModal.js";
+import SiteAuthRequirementPicker from "./accounts/SiteAuthRequirementPicker.js";
 import {
   buildAddAccountPrereqHint,
   buildVerifyFailureHint,
@@ -125,6 +130,12 @@ export default function Accounts() {
   const [addMode, setAddMode] = useState<"token" | "login">("token");
   const [loginForm, setLoginForm] = useState(createLoginForm);
   const [tokenForm, setTokenForm] = useState(() => createTokenForm("session"));
+  const [siteAuthRequirements, setSiteAuthRequirements] =
+    useState<SiteAuthRequirementsResponse | null>(null);
+  const [siteAuthRequirementsLoading, setSiteAuthRequirementsLoading] =
+    useState(false);
+  const [siteAuthRequirementSiteId, setSiteAuthRequirementSiteId] =
+    useState<number | null>(null);
   const [createIntentPresetId, setCreateIntentPresetId] = useState<
     string | null
   >(null);
@@ -194,6 +205,7 @@ export default function Accounts() {
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastRebindTargetRef = useRef<any | null>(null);
   const modelModalRequestSeqRef = useRef(0);
+  const siteAuthRequirementRequestSeqRef = useRef(0);
   const toast = useToast();
   if (rebindTarget) lastRebindTargetRef.current = rebindTarget;
   const activeRebindTarget = rebindTarget || lastRebindTargetRef.current;
@@ -259,6 +271,51 @@ export default function Accounts() {
     [createIntentPresetId],
   );
 
+  const loadSiteAuthRequirementsForSite = useCallback(async (siteId: number) => {
+    const requestSeq = ++siteAuthRequirementRequestSeqRef.current;
+    setSiteAuthRequirementsLoading(true);
+    setSiteAuthRequirementSiteId(siteId);
+    try {
+      const response = await api.getSiteAuthRequirements(siteId);
+      if (siteAuthRequirementRequestSeqRef.current !== requestSeq) return;
+      setSiteAuthRequirements(response);
+    } catch {
+      if (siteAuthRequirementRequestSeqRef.current !== requestSeq) return;
+      setSiteAuthRequirements(null);
+    } finally {
+      if (siteAuthRequirementRequestSeqRef.current === requestSeq) {
+        setSiteAuthRequirementsLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeSegment !== "session" || addMode !== "token" || !showAdd || !tokenForm.siteId) {
+      siteAuthRequirementRequestSeqRef.current += 1;
+      setSiteAuthRequirements(null);
+      setSiteAuthRequirementSiteId(null);
+      setSiteAuthRequirementsLoading(false);
+      return;
+    }
+
+    void loadSiteAuthRequirementsForSite(tokenForm.siteId);
+  }, [
+    activeSegment,
+    addMode,
+    loadSiteAuthRequirementsForSite,
+    showAdd,
+    tokenForm.siteId,
+  ]);
+
+  const handleAddSiteAuthCredential = (provider: string) => {
+    const params = new URLSearchParams({ siteAuthProvider: provider });
+    navigate({ pathname: "/oauth", search: `?${params.toString()}` });
+  };
+
+  const handleUseSiteAuthCredential = (credential: SiteAuthCredentialInfo) => {
+    toast.info(`凭证「${credential.label}」登录创建会在下一步接入`);
+  };
+
   const resetAddForms = (
     credentialMode: "session" | "apikey" = activeAddCredentialMode,
   ) => {
@@ -268,6 +325,9 @@ export default function Accounts() {
     setCreateIntentPresetId(null);
     setApplyCreatePresetModels(false);
     setVerifyResult(null);
+    setSiteAuthRequirements(null);
+    setSiteAuthRequirementSiteId(null);
+    setSiteAuthRequirementsLoading(false);
   };
 
   const closeAddPanel = () => {
@@ -1701,6 +1761,15 @@ export default function Accounts() {
                       placeholder="选择站点"
                       searchable
                       searchPlaceholder={SITE_SELECT_SEARCH_PLACEHOLDER}
+                    />
+                    <SiteAuthRequirementPicker
+                      data={siteAuthRequirements}
+                      loading={
+                        siteAuthRequirementsLoading &&
+                        siteAuthRequirementSiteId === tokenForm.siteId
+                      }
+                      onAddCredential={handleAddSiteAuthCredential}
+                      onUseCredential={handleUseSiteAuthCredential}
                     />
                     <input
                       placeholder="连接名称（可选）"

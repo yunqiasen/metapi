@@ -47,7 +47,6 @@ import {
   parseAccountLoginPayload,
   parseAccountManualModelsPayload,
   parseAccountRebindSessionPayload,
-  parseAccountSiteAuthLoginPayload,
   parseAccountUpdatePayload,
   parseAccountVerifyTokenPayload,
 } from "../../contracts/accountsRoutePayloads.js";
@@ -60,11 +59,6 @@ import {
   parseBatchApiKeys,
 } from "../../services/apiKeyBatch.js";
 import { createManualAccount } from "../../services/manualAccountCreationService.js";
-import {
-  getSiteAuthCredential,
-  getSiteAuthCredentialPayload,
-} from "../../services/site-auth/credentialVault.js";
-import { resolveSiteAuthLogin } from "../../services/site-auth/loginBridge.js";
 import {
   getSiteAuthCredential,
   getSiteAuthCredentialPayload,

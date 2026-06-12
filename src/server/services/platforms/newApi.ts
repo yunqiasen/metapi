@@ -1,4 +1,15 @@
-import { ApiTokenInfo, BasePlatformAdapter, CheckinResult, BalanceInfo, UserInfo, TokenVerifyResult, CreateApiTokenOptions, type SiteAnnouncement } from './base.js';
+import {
+  ApiTokenInfo,
+  BasePlatformAdapter,
+  CheckinResult,
+  BalanceInfo,
+  UserInfo,
+  TokenVerifyResult,
+  CreateApiTokenOptions,
+  type ExternalAuthLoginInput,
+  type ExternalAuthLoginResult,
+  type SiteAnnouncement,
+} from './base.js';
 import type { RequestInit as UndiciRequestInit } from 'undici';
 import { createContext, runInContext } from 'node:vm';
 import { withSiteProxyRequestInit } from '../siteProxy.js';
@@ -977,6 +988,46 @@ export class NewApiAdapter extends BasePlatformAdapter {
         message: this.formatRequestErrorMessage(err) || err?.message || '登录请求失败',
       };
     }
+  }
+
+  async externalAuthLogin(
+    baseUrl: string,
+    input: ExternalAuthLoginInput,
+  ): Promise<ExternalAuthLoginResult> {
+    if (input.sourceProvider !== 'linuxdo' || input.credentialType !== 'cookie') {
+      throw new Error('new-api site auth login only supports LinuxDO cookie credentials');
+    }
+
+    const cookie = typeof input.payload?.cookie === 'string' ? input.payload.cookie.trim() : '';
+    if (!cookie) {
+      throw new Error('LinuxDO credential is missing cookie');
+    }
+
+    const { data: res, cookieHeader } = await this.fetchJsonRawWithCookie<any>(`${baseUrl}/api/user/oauth/linuxdo`, {
+      method: 'POST',
+      body: JSON.stringify({ provider: 'linuxdo' }),
+      headers: {
+        Cookie: cookie,
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    });
+    if (!res?.success) {
+      throw new Error(this.extractResponseMessage(res) || 'LinuxDO site auth login failed');
+    }
+
+    const accessToken = this.extractLoginAccessToken(res) || (this.hasUsableSessionCookie(cookieHeader) ? cookieHeader : '');
+    if (!accessToken) {
+      throw new Error('LinuxDO site auth login did not return a target session');
+    }
+
+    const platformUserId = typeof res?.data?.id === 'number' ? res.data.id : undefined;
+    const username = typeof res?.data?.username === 'string' ? res.data.username : undefined;
+    return {
+      accessToken,
+      platformUserId,
+      username,
+      sourceProvider: 'linuxdo',
+    };
   }
 
   override async verifyToken(baseUrl: string, token: string, platformUserId?: number): Promise<TokenVerifyResult> {

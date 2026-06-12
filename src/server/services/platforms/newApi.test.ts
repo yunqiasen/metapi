@@ -29,6 +29,8 @@ const SHIELD_LOGIN_COOKIE = 'challenge-seed';
 const COOKIE_ONLY_LOGIN_USERNAME = 'cookie-only-user';
 const COOKIE_ONLY_LOGIN_PASSWORD = 'cookie-only-pass';
 const COOKIE_ONLY_LOGIN_SESSION = 'cookie-only-session';
+const LINUXDO_SITE_AUTH_COOKIE = 'ld_auth_session=linuxdo-upstream-session';
+const LINUXDO_TARGET_SESSION = 'linuxdo-target-session';
 const OPENAI_MODELS_SHIELDED_TOKEN = 'openai-models-shielded-token';
 const COOKIE_SHIELDED_TOKEN = Buffer.from(
   `1771864970|${Buffer.from('username=linuxdo_131936').toString('base64')}|sig`,
@@ -162,6 +164,24 @@ describe('NewApiAdapter', () => {
             data: { token: SHIELD_LOGIN_TOKEN },
           }));
         });
+        return;
+      }
+
+      if (req.url === '/api/user/oauth/linuxdo' && req.method === 'POST') {
+        const cookieHeader = typeof req.headers.cookie === 'string' ? req.headers.cookie : '';
+        if (!cookieHeader.includes(LINUXDO_SITE_AUTH_COOKIE)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'missing LinuxDO cookie' }));
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': `session=${LINUXDO_TARGET_SESSION}; Path=/; HttpOnly`,
+        });
+        res.end(JSON.stringify({
+          success: true,
+          data: { id: 2468, username: 'linuxdo-target-user' },
+        }));
         return;
       }
 
@@ -599,6 +619,30 @@ describe('NewApiAdapter', () => {
     expect(result.accessToken || '').toContain(`session=${COOKIE_ONLY_LOGIN_SESSION}`);
     expect(result.accessToken || '').toContain(`acw_sc__v2=${ANYROUTER_CHALLENGE_ACW}`);
     expect(result.accessToken || '').toContain(`cdn_sec_tc=${SHIELD_LOGIN_COOKIE}`);
+  });
+
+  it('exchanges a LinuxDO site auth cookie for a target NewAPI session cookie', async () => {
+    const adapter = new NewApiAdapter();
+    const result = await adapter.externalAuthLogin?.(baseUrl, {
+      sourceProvider: 'linuxdo',
+      credentialType: 'cookie',
+      payload: { cookie: LINUXDO_SITE_AUTH_COOKIE },
+    });
+
+    expect(result).toMatchObject({
+      sourceProvider: 'linuxdo',
+      accessToken: expect.stringContaining(`session=${LINUXDO_TARGET_SESSION}`),
+      platformUserId: 2468,
+      username: 'linuxdo-target-user',
+    });
+    expect(
+      requests.some(
+        (r) =>
+          r.url === '/api/user/oauth/linuxdo' &&
+          typeof r.headers.cookie === 'string' &&
+          r.headers.cookie.includes(LINUXDO_SITE_AUTH_COOKIE),
+      ),
+    ).toBe(true);
   });
 
   it('detects cookie session values as session cookies for anyrouter-like deployments', async () => {

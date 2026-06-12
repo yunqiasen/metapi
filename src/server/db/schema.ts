@@ -209,6 +209,30 @@ export const oauthRouteUnitMembers = sqliteTable('oauth_route_unit_members', {
   unitCooldownIdx: index('oauth_route_unit_members_unit_cooldown_idx').on(table.unitId, table.cooldownUntil),
 }));
 
+export const siteAuthCredentials = sqliteTable('site_auth_credentials', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  provider: text('provider').notNull(),
+  label: text('label').notNull(),
+  subject: text('subject'),
+  email: text('email'),
+  username: text('username'),
+  credentialType: text('credential_type').notNull(),
+  encryptedPayload: text('encrypted_payload').notNull(),
+  status: text('status').notNull().default('active'),
+  expiresAt: text('expires_at'),
+  lastVerifiedAt: text('last_verified_at'),
+  lastError: text('last_error'),
+  proxyUrl: text('proxy_url'),
+  useSystemProxy: integer('use_system_proxy', { mode: 'boolean' }).default(false),
+  metadata: text('metadata'),
+  createdAt: text('created_at').default(sql`(datetime('now'))`),
+  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
+}, (table) => ({
+  providerIdx: index('site_auth_credentials_provider_idx').on(table.provider),
+  statusIdx: index('site_auth_credentials_status_idx').on(table.status),
+  providerSubjectIdx: index('site_auth_credentials_provider_subject_idx').on(table.provider, table.subject),
+}));
+
 export const routeChannels = sqliteTable('route_channels', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   routeId: integer('route_id').notNull().references(() => tokenRoutes.id, { onDelete: 'cascade' }),

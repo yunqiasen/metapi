@@ -4,6 +4,7 @@ type SiteAuthCredentialPanelProps = {
   providers: SiteAuthProviderInfo[];
   credentials: SiteAuthCredentialInfo[];
   loaded: boolean;
+  onImportLinuxDo: () => void;
 };
 
 function resolveCredentialTypeLabel(value: string): string {
@@ -28,6 +29,7 @@ export default function SiteAuthCredentialPanel({
   providers,
   credentials,
   loaded,
+  onImportLinuxDo,
 }: SiteAuthCredentialPanelProps) {
   const visibleProviders = providers.length > 0
     ? providers
@@ -46,6 +48,9 @@ export default function SiteAuthCredentialPanel({
             保存 LinuxDO、GitHub、Google 这类用于登录目标站点的身份凭证。
           </div>
         </div>
+        <button type="button" className="btn btn-ghost oauth-outline-button" onClick={onImportLinuxDo}>
+          导入 LinuxDO 凭证
+        </button>
       </div>
 
       <div className="oauth-auth-provider-strip" aria-label="计划支持的第三方登录 Provider">

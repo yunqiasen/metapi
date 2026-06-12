@@ -776,6 +776,24 @@ export type SiteAuthCredentialsResponse = {
   total: number;
 };
 
+export type SiteAuthCredentialImportRequest = {
+  provider: string;
+  label?: string;
+  subject?: string;
+  email?: string;
+  username?: string;
+  credentialType: string;
+  payload: Record<string, unknown>;
+  status?: string;
+  expiresAt?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type SiteAuthCredentialImportResponse = {
+  success: boolean;
+  item: SiteAuthCredentialInfo;
+};
+
 export type DownstreamApiKeyTrendBucket = {
   startUtc: string | null;
   totalRequests: number;
@@ -1245,6 +1263,11 @@ export const api = {
     request("/api/site-auth/providers") as Promise<SiteAuthProvidersResponse>,
   getSiteAuthCredentials: () =>
     request("/api/site-auth/credentials") as Promise<SiteAuthCredentialsResponse>,
+  importSiteAuthCredential: (data: SiteAuthCredentialImportRequest) =>
+    request("/api/site-auth/credentials/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }) as Promise<SiteAuthCredentialImportResponse>,
 
   // Events
   getEvents: (params?: string) =>

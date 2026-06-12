@@ -21,6 +21,7 @@ const { apiMock, openMock, focusMock, confirmMock, promptMock } = vi.hoisted(() 
     deleteOAuthRouteUnit: vi.fn(),
     getSiteAuthProviders: vi.fn(),
     getSiteAuthCredentials: vi.fn(),
+    importSiteAuthCredential: vi.fn(),
     getAccountModels: vi.fn(),
     checkModels: vi.fn(),
   },
@@ -294,6 +295,83 @@ describe('OAuthManagement page', () => {
         expect(text).toContain('Cookie');
         expect(text).toContain('有效');
       });
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('imports a LinuxDO cookie credential from the site auth panel', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getSiteAuthCredentials
+      .mockResolvedValueOnce({ items: [], total: 0 })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: 12,
+            provider: 'linuxdo',
+            label: 'LinuxDO 手动凭证',
+            subject: 'linuxdo-user-42',
+            credentialType: 'cookie',
+            status: 'active',
+            metadata: { source: 'manual-ui' },
+          },
+        ],
+        total: 1,
+      });
+    apiMock.importSiteAuthCredential.mockResolvedValue({
+      success: true,
+      item: {
+        id: 12,
+        provider: 'linuxdo',
+        label: 'LinuxDO 手动凭证',
+        subject: 'linuxdo-user-42',
+        credentialType: 'cookie',
+        status: 'active',
+        metadata: { source: 'manual-ui' },
+      },
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('导入 LinuxDO 凭证');
+      });
+
+      await clickButton(root!, '导入 LinuxDO 凭证');
+      const labelInput = root.root.find((node) => node.type === 'input' && node.props['data-site-auth-import'] === 'label');
+      const cookieInput = root.root.find((node) => node.type === 'textarea' && node.props['data-site-auth-import'] === 'cookie');
+      await act(async () => {
+        labelInput.props.onChange({ target: { value: 'LinuxDO 手动凭证' } });
+        cookieInput.props.onChange({ target: { value: 'ld_auth_session=super-secret-session' } });
+      });
+      await clickButton(root!, '保存凭证');
+
+      expect(apiMock.importSiteAuthCredential).toHaveBeenCalledWith({
+        provider: 'linuxdo',
+        label: 'LinuxDO 手动凭证',
+        credentialType: 'cookie',
+        payload: { cookie: 'ld_auth_session=super-secret-session' },
+        metadata: { source: 'manual-ui' },
+      });
+      expect(apiMock.getSiteAuthCredentials).toHaveBeenCalledTimes(2);
+      expect(collectText(root.root)).toContain('LinuxDO 手动凭证');
     } finally {
       root?.unmount();
     }

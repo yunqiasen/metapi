@@ -32,6 +32,7 @@ import {
   type SiteAuthCredentialDecryptabilityResponse,
   type SiteAuthCredentialInfo,
   type SiteAuthCredentialTargetSitesResponse,
+  type SiteAuthAuthorizationStartResponse,
   type SiteAuthProviderInfo,
 } from '../api.js';
 
@@ -40,6 +41,14 @@ const CONNECTION_PAGE_LIMIT = 200;
 const AUTO_REFRESH_OPTIONS = [0, 5, 10, 15, 30] as const;
 
 type SiteAuthImportProvider = 'linuxdo' | 'github' | 'google';
+type CreateConnectionMode = 'oauth' | 'site-auth';
+
+type ActiveSiteAuthSession = {
+  provider: string;
+  state: string;
+  authorizationUrl: string;
+  instructions: SiteAuthAuthorizationStartResponse['instructions'];
+};
 
 function normalizeSiteAuthImportProvider(provider: string): SiteAuthImportProvider {
   if (provider === 'github' || provider === 'google') return provider;
@@ -656,6 +665,8 @@ export default function OAuthManagement() {
   const [providers, setProviders] = useState<OAuthProviderInfo[]>([]);
   const [connections, setConnections] = useState<OAuthConnectionInfo[]>([]);
   const [siteAuthProviders, setSiteAuthProviders] = useState<SiteAuthProviderInfo[]>([]);
+  const [createConnectionMode, setCreateConnectionMode] = useState<CreateConnectionMode>('oauth');
+  const [selectedSiteAuthProviderKey, setSelectedSiteAuthProviderKey] = useState<SiteAuthImportProvider>('github');
   const [siteAuthCredentials, setSiteAuthCredentials] = useState<SiteAuthCredentialInfo[]>([]);
   const [siteAuthCredentialDecryptability, setSiteAuthCredentialDecryptability] =
     useState<SiteAuthCredentialDecryptabilityResponse | null>(null);
@@ -705,6 +716,7 @@ export default function OAuthManagement() {
   const [selectedProviderKey, setSelectedProviderKey] = useState('');
   const [drawerProjectId, setDrawerProjectId] = useState('');
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
+  const [activeSiteAuthSession, setActiveSiteAuthSession] = useState<ActiveSiteAuthSession | null>(null);
   const [manualCallbackVisible, setManualCallbackVisible] = useState(false);
   const [manualCallbackUrl, setManualCallbackUrl] = useState('');
   const [manualCallbackSubmitting, setManualCallbackSubmitting] = useState(false);
@@ -995,8 +1007,22 @@ export default function OAuthManagement() {
   }, [autoRefreshSeconds, loadConnections]);
 
   useEffect(() => {
-    if (!loaded || providers.length === 0 || createIntentHandledRef.current) return;
+    if (!loaded || createIntentHandledRef.current) return;
     const params = new URLSearchParams(location.search);
+    const siteAuthProvider = asTrimmedString(params.get('siteAuthProvider'));
+    if (siteAuthProvider) {
+      createIntentHandledRef.current = true;
+      setDrawerIntent({ mode: 'create' });
+      setCreateConnectionMode('site-auth');
+      setSelectedSiteAuthProviderKey(normalizeSiteAuthImportProvider(siteAuthProvider));
+      setDrawerProjectId('');
+      resetOauthProxySettings();
+      setDrawerOpen(true);
+      setSessionInfo('从连接页跳转到 OAuth 管理，请在这里完成第三方登录授权并保存凭证。');
+      return;
+    }
+
+    if (providers.length === 0) return;
     if (params.get('create') !== '1') return;
 
     createIntentHandledRef.current = true;
@@ -1049,6 +1075,43 @@ export default function OAuthManagement() {
   }, [activeSession, loadConnections]);
 
   useEffect(() => {
+    if (!activeSiteAuthSession) return undefined;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const session = await api.getSiteAuthAuthorizationSession(activeSiteAuthSession.state);
+        if (cancelled) return;
+        if (session.status === 'pending') {
+          setSessionInfo('等待第三方登录授权完成');
+          timer = setTimeout(poll, POLL_INTERVAL_MS);
+          return;
+        }
+        if (session.status === 'success') {
+          setSessionSuccess(`${session.credential?.label || '第三方登录凭证'} 已保存`);
+          await loadSiteAuthCredentials();
+          setActiveSiteAuthSession(null);
+          return;
+        }
+        setSessionError(`第三方登录授权失败：${session.error || '未知错误'}`);
+        setActiveSiteAuthSession(null);
+      } catch (error: any) {
+        if (cancelled) return;
+        setSessionError(error?.message || '第三方登录授权状态查询失败');
+        setActiveSiteAuthSession(null);
+      }
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeSiteAuthSession, loadSiteAuthCredentials]);
+
+  useEffect(() => {
     if (!activeSession) {
       setManualCallbackVisible(false);
       setManualCallbackUrl('');
@@ -1076,9 +1139,33 @@ export default function OAuthManagement() {
     [providers],
   );
 
+  const siteAuthProviderOptions = useMemo(
+    () => (siteAuthProviders.length > 0 ? siteAuthProviders : [
+      { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: [], captureModes: [], enabled: true },
+      { provider: 'github', label: 'GitHub', credentialTypes: [], captureModes: [], enabled: true },
+      { provider: 'google', label: 'Google', credentialTypes: [], captureModes: [], enabled: true },
+    ]).map((provider) => ({
+      value: provider.provider,
+      label: provider.label,
+      description: provider.provider === 'linuxdo'
+        ? '浏览器登录弹窗 · Cookie 兜底保存'
+        : 'OAuth 浏览器授权后保存凭证',
+    })),
+    [siteAuthProviders],
+  );
+
   const selectedProvider = useMemo(
     () => providers.find((provider) => provider.provider === selectedProviderKey) || null,
     [providers, selectedProviderKey],
+  );
+
+  const selectedSiteAuthProvider = useMemo(
+    () => (siteAuthProviders.length > 0 ? siteAuthProviders : [
+      { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: [], captureModes: [], enabled: true },
+      { provider: 'github', label: 'GitHub', credentialTypes: [], captureModes: [], enabled: true },
+      { provider: 'google', label: 'Google', credentialTypes: [], captureModes: [], enabled: true },
+    ]).find((provider) => provider.provider === selectedSiteAuthProviderKey) || null,
+    [siteAuthProviders, selectedSiteAuthProviderKey],
   );
 
   const siteOptions = useMemo(() => {
@@ -1166,7 +1253,18 @@ export default function OAuthManagement() {
 
   const openCreateDrawer = (provider?: string) => {
     setDrawerIntent({ mode: 'create', provider });
+    setCreateConnectionMode('oauth');
     setSelectedProviderKey(provider || providers[0]?.provider || '');
+    setDrawerProjectId('');
+    resetOauthProxySettings();
+    setDrawerOpen(true);
+    setShowColumnMenu(false);
+  };
+
+  const openSiteAuthAuthorizationDrawer = (provider: SiteAuthImportProvider = 'github') => {
+    setDrawerIntent({ mode: 'create' });
+    setCreateConnectionMode('site-auth');
+    setSelectedSiteAuthProviderKey(provider);
     setDrawerProjectId('');
     resetOauthProxySettings();
     setDrawerOpen(true);
@@ -1348,6 +1446,30 @@ export default function OAuthManagement() {
       openOAuthPopup(provider.provider, started.authorizationUrl);
     } catch (error: any) {
       setSessionError(error?.message || '无法启动 OAuth 授权');
+    } finally {
+      setActionLoadingKey('');
+    }
+  };
+
+  const handleStartSiteAuthAuthorization = async () => {
+    const provider = selectedSiteAuthProvider;
+    if (!provider) return;
+    const actionKey = `site-auth-start:${provider.provider}`;
+    setActionLoadingKey(actionKey);
+    try {
+      const started = await api.startSiteAuthProviderAuthorization(provider.provider);
+      setSessionInfo(provider.provider === 'linuxdo'
+        ? '已打开 LinuxDO 登录弹窗。完成登录后，如无法自动保存，请使用右侧兜底导入。'
+        : '等待第三方登录授权完成');
+      setActiveSiteAuthSession({
+        provider: started.provider,
+        state: started.state,
+        authorizationUrl: started.authorizationUrl,
+        instructions: started.instructions,
+      });
+      openOAuthPopup(`site-auth-${provider.provider}`, started.authorizationUrl);
+    } catch (error: any) {
+      setSessionError(error?.message || '无法启动第三方登录授权');
     } finally {
       setActionLoadingKey('');
     }
@@ -2339,6 +2461,7 @@ export default function OAuthManagement() {
           decryptability={siteAuthCredentialDecryptability}
           loaded={loaded}
           onImportCredential={openSiteAuthImportModal}
+          onAuthorizeCredential={() => openSiteAuthAuthorizationDrawer('github')}
           onVerifyCredential={handleVerifySiteAuthCredential}
           onDeleteCredential={handleDeleteSiteAuthCredential}
           onLoadTargetSites={handleLoadSiteAuthTargetSites}
@@ -2430,15 +2553,45 @@ export default function OAuthManagement() {
           <div className="card oauth-drawer-panel">
             <div className="oauth-drawer-section">
               {drawerIntent.mode === 'create' ? (
-                <div className="oauth-form-field">
-                  <div className="oauth-field-label">Provider</div>
-                  <ModernSelect
-                    value={selectedProviderKey}
-                    onChange={(value) => setSelectedProviderKey(String(value || ''))}
-                    options={providerOptions}
-                    placeholder="选择 OAuth Provider"
-                  />
-                </div>
+                <>
+                  <div className="oauth-toggle-group oauth-create-mode-toggle">
+                    <button
+                      type="button"
+                      className={`oauth-toggle ${createConnectionMode === 'oauth' ? 'is-active' : ''}`.trim()}
+                      onClick={() => setCreateConnectionMode('oauth')}
+                    >
+                      AI Provider
+                    </button>
+                    <button
+                      type="button"
+                      className={`oauth-toggle ${createConnectionMode === 'site-auth' ? 'is-active' : ''}`.trim()}
+                      onClick={() => setCreateConnectionMode('site-auth')}
+                    >
+                      站点登录授权
+                    </button>
+                  </div>
+                  {createConnectionMode === 'site-auth' ? (
+                    <div className="oauth-form-field">
+                      <div className="oauth-field-label">第三方登录 Provider</div>
+                      <ModernSelect
+                        value={selectedSiteAuthProviderKey}
+                        onChange={(value) => setSelectedSiteAuthProviderKey(normalizeSiteAuthImportProvider(String(value || '')))}
+                        options={siteAuthProviderOptions}
+                        placeholder="选择 LinuxDO / GitHub / Google"
+                      />
+                    </div>
+                  ) : (
+                    <div className="oauth-form-field">
+                      <div className="oauth-field-label">Provider</div>
+                      <ModernSelect
+                        value={selectedProviderKey}
+                        onChange={(value) => setSelectedProviderKey(String(value || ''))}
+                        options={providerOptions}
+                        placeholder="选择 OAuth Provider"
+                      />
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="oauth-cell-stack">
                   <div className="oauth-field-label">当前连接</div>
@@ -2455,7 +2608,7 @@ export default function OAuthManagement() {
                 </div>
               )}
 
-              {selectedProvider?.requiresProjectId && drawerIntent.mode === 'create' ? (
+              {selectedProvider?.requiresProjectId && drawerIntent.mode === 'create' && createConnectionMode === 'oauth' ? (
                 <div className="oauth-form-field">
                   <div className="oauth-field-label">Google Cloud Project ID（可选）</div>
                   <input
@@ -2468,97 +2621,117 @@ export default function OAuthManagement() {
                 </div>
               ) : null}
 
-              <div className="oauth-form-note">
-                {drawerIntent.mode === 'proxy'
-                  ? '这里修改的是账号级 OAuth 代理。点击“保存代理”会立即落库并刷新列表；只有“保存并重新授权”才会重新走授权流程。若两项都不勾选，则回退到站点代理配置。'
-                  : '这里的设置会作用于下一次“连接”或“重新授权”。填写代理地址后，本次 OAuth 换 token 和后续生成的账号都会直接带上这份账号级代理配置；若不勾选，则回退到站点代理配置。'}
-              </div>
-
-              <div className="oauth-toggle-group">
-                <label className="oauth-toggle">
-                  <input
-                    type="checkbox"
-                    checked={oauthSystemProxyEnabled}
-                    data-oauth-setting="use-system-proxy"
-                    onChange={(event) => {
-                      const checked = !!event.target.checked;
-                      setOauthSystemProxyEnabled(checked);
-                      if (checked) {
-                        setOauthCustomProxyEnabled(false);
-                        setOauthProxyUrl('');
-                      }
-                    }}
-                  />
-                  <span>使用系统级代理</span>
-                </label>
-                <label className="oauth-toggle">
-                  <input
-                    type="checkbox"
-                    checked={oauthCustomProxyEnabled}
-                    data-oauth-setting="use-custom-proxy"
-                    onChange={(event) => {
-                      const checked = !!event.target.checked;
-                      setOauthCustomProxyEnabled(checked);
-                      if (checked) setOauthSystemProxyEnabled(false);
-                    }}
-                  />
-                  <span>使用自定义代理</span>
-                </label>
-              </div>
-
-              <div className="oauth-form-field">
-                <div className="oauth-field-label">代理地址</div>
-                <input
-                  type="text"
-                  className="oauth-input"
-                  value={oauthProxyUrl}
-                  data-oauth-setting="proxy-url"
-                  onChange={(event) => setOauthProxyUrl(event.target.value)}
-                  placeholder="如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
-                  disabled={!oauthCustomProxyEnabled}
-                />
-              </div>
-
-              {drawerIntent.mode === 'proxy' ? (
-                <div className="oauth-inline-actions">
+              {drawerIntent.mode === 'create' && createConnectionMode === 'site-auth' ? (
+                <>
+                  <div className="oauth-form-note">
+                    这里添加的是用于登录目标中转站的第三方身份，不直接参与 `/v1` 路由。点击授权会打开浏览器小窗，GitHub / Google 授权成功后自动加密保存到右侧凭证池。
+                  </div>
                   <button
                     type="button"
                     className="btn btn-primary"
-                    onClick={handleSaveProxy}
-                    disabled={
-                      actionLoadingKey === `save-proxy:${drawerIntent.account.accountId}`
-                      || actionLoadingKey.startsWith('start:')
-                    }
+                    onClick={handleStartSiteAuthAuthorization}
+                    disabled={!selectedSiteAuthProvider || actionLoadingKey.startsWith('site-auth-start:')}
                   >
-                    {actionLoadingKey === `save-proxy:${drawerIntent.account.accountId}` ? '保存中...' : '保存代理'}
+                    {actionLoadingKey.startsWith('site-auth-start:')
+                      ? '启动中...'
+                      : `授权并保存 ${selectedSiteAuthProvider?.label || ''}`.trim()}
                   </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    onClick={handleStart}
-                    disabled={
-                      !selectedProvider
-                      || !selectedProvider.enabled
-                      || actionLoadingKey.startsWith('start:')
-                      || actionLoadingKey === `save-proxy:${drawerIntent.account.accountId}`
-                    }
-                  >
-                    {actionLoadingKey.startsWith('start:') ? '启动中...' : '保存并重新授权'}
-                  </button>
-                </div>
+                </>
               ) : (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={handleStart}
-                  disabled={!selectedProvider || !selectedProvider.enabled || actionLoadingKey.startsWith('start:')}
-                >
-                  {actionLoadingKey.startsWith('start:')
-                    ? '启动中...'
-                    : drawerIntent.mode === 'rebind'
-                      ? `重新授权 ${selectedProvider?.label || ''}`.trim()
-                      : `连接 ${selectedProvider?.label || ''}`.trim()}
-                </button>
+                <>
+                  <div className="oauth-form-note">
+                    {drawerIntent.mode === 'proxy'
+                      ? '这里修改的是账号级 OAuth 代理。点击“保存代理”会立即落库并刷新列表；只有“保存并重新授权”才会重新走授权流程。若两项都不勾选，则回退到站点代理配置。'
+                      : '这里的设置会作用于下一次“连接”或“重新授权”。填写代理地址后，本次 OAuth 换 token 和后续生成的账号都会直接带上这份账号级代理配置；若不勾选，则回退到站点代理配置。'}
+                  </div>
+
+                  <div className="oauth-toggle-group">
+                    <label className="oauth-toggle">
+                      <input
+                        type="checkbox"
+                        checked={oauthSystemProxyEnabled}
+                        data-oauth-setting="use-system-proxy"
+                        onChange={(event) => {
+                          const checked = !!event.target.checked;
+                          setOauthSystemProxyEnabled(checked);
+                          if (checked) {
+                            setOauthCustomProxyEnabled(false);
+                            setOauthProxyUrl('');
+                          }
+                        }}
+                      />
+                      <span>使用系统级代理</span>
+                    </label>
+                    <label className="oauth-toggle">
+                      <input
+                        type="checkbox"
+                        checked={oauthCustomProxyEnabled}
+                        data-oauth-setting="use-custom-proxy"
+                        onChange={(event) => {
+                          const checked = !!event.target.checked;
+                          setOauthCustomProxyEnabled(checked);
+                          if (checked) setOauthSystemProxyEnabled(false);
+                        }}
+                      />
+                      <span>使用自定义代理</span>
+                    </label>
+                  </div>
+
+                  <div className="oauth-form-field">
+                    <div className="oauth-field-label">代理地址</div>
+                    <input
+                      type="text"
+                      className="oauth-input"
+                      value={oauthProxyUrl}
+                      data-oauth-setting="proxy-url"
+                      onChange={(event) => setOauthProxyUrl(event.target.value)}
+                      placeholder="如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+                      disabled={!oauthCustomProxyEnabled}
+                    />
+                  </div>
+
+                  {drawerIntent.mode === 'proxy' ? (
+                    <div className="oauth-inline-actions">
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={handleSaveProxy}
+                        disabled={
+                          actionLoadingKey === `save-proxy:${drawerIntent.account.accountId}`
+                          || actionLoadingKey.startsWith('start:')
+                        }
+                      >
+                        {actionLoadingKey === `save-proxy:${drawerIntent.account.accountId}` ? '保存中...' : '保存代理'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={handleStart}
+                        disabled={
+                          !selectedProvider
+                          || !selectedProvider.enabled
+                          || actionLoadingKey.startsWith('start:')
+                          || actionLoadingKey === `save-proxy:${drawerIntent.account.accountId}`
+                        }
+                      >
+                        {actionLoadingKey.startsWith('start:') ? '启动中...' : '保存并重新授权'}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={handleStart}
+                      disabled={!selectedProvider || !selectedProvider.enabled || actionLoadingKey.startsWith('start:')}
+                    >
+                      {actionLoadingKey.startsWith('start:')
+                        ? '启动中...'
+                        : drawerIntent.mode === 'rebind'
+                          ? `重新授权 ${selectedProvider?.label || ''}`.trim()
+                          : `连接 ${selectedProvider?.label || ''}`.trim()}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>

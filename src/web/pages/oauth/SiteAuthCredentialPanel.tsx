@@ -11,6 +11,7 @@ type SiteAuthCredentialPanelProps = {
   decryptability?: SiteAuthCredentialDecryptabilityResponse | null;
   loaded: boolean;
   onImportCredential: (provider: string) => void;
+  onAuthorizeCredential: () => void;
   onVerifyCredential: (credentialId: number) => void;
   onDeleteCredential: (credentialId: number) => void;
   onLoadTargetSites: (credentialId: number) => void;
@@ -43,6 +44,7 @@ export default function SiteAuthCredentialPanel({
   decryptability = null,
   loaded,
   onImportCredential,
+  onAuthorizeCredential,
   onVerifyCredential,
   onDeleteCredential,
   onLoadTargetSites,
@@ -68,14 +70,11 @@ export default function SiteAuthCredentialPanel({
           </div>
         </div>
         <div className="oauth-site-auth-import-actions">
+          <button type="button" className="btn btn-primary" onClick={onAuthorizeCredential}>
+            授权添加凭证
+          </button>
           <button type="button" className="btn btn-ghost oauth-outline-button" onClick={() => onImportCredential('linuxdo')}>
-            导入 LinuxDO 凭证 · LinuxDO Cookie
-          </button>
-          <button type="button" className="btn btn-ghost oauth-outline-button" onClick={() => onImportCredential('github')}>
-            GitHub Token
-          </button>
-          <button type="button" className="btn btn-ghost oauth-outline-button" onClick={() => onImportCredential('google')}>
-            Google Token
+            手动导入兜底
           </button>
         </div>
       </div>

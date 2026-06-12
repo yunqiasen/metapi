@@ -31,4 +31,15 @@ describe('site auth provider registry', () => {
     expect(getSiteAuthProviderDefinition('linuxdo')?.metadata.label).toBe('LinuxDO');
     expect(getSiteAuthProviderDefinition('unknown')).toBeUndefined();
   });
+
+  it('keeps GitHub and Google on callback authorization instead of manual token capture', () => {
+    expect(getSiteAuthProviderDefinition('github')?.metadata).toMatchObject({
+      credentialTypes: ['oauth_token'],
+      captureModes: ['oauth_callback'],
+    });
+    expect(getSiteAuthProviderDefinition('google')?.metadata).toMatchObject({
+      credentialTypes: ['oauth_token'],
+      captureModes: ['oauth_callback'],
+    });
+  });
 });

@@ -79,7 +79,20 @@ The check requires `AUTH_TOKEN` in the container environment. It verifies the UI
 Use `Provider 与登录凭证` for two separate things:
 
 - Provider connections: routeable OAuth providers such as Codex, Claude, Gemini CLI, and Antigravity.
-- Third-party login credentials: reusable login material for target sites, currently LinuxDO Cookie, GitHub Token, and Google Token.
+- Third-party login credentials: reusable login material for target sites, currently LinuxDO Cookie plus GitHub / Google browser authorization credentials.
+
+GitHub and Google are added from `新建 OAuth 连接 -> 站点登录授权`. The page opens a popup, receives the provider callback at `/api/site-auth/callback/:provider`, exchanges the code server-side, and stores the encrypted credential payload in the local database.
+
+Set these variables in `.env` before using GitHub / Google popup authorization:
+
+```bash
+SITE_AUTH_GITHUB_CLIENT_ID=
+SITE_AUTH_GITHUB_CLIENT_SECRET=
+SITE_AUTH_GOOGLE_CLIENT_ID=
+SITE_AUTH_GOOGLE_CLIENT_SECRET=
+```
+
+Register callback URLs on the OAuth app side for every deployment host that operators use, for example `http://100.126.43.55:4000/api/site-auth/callback/github` and `http://100.126.43.55:4000/api/site-auth/callback/google`.
 
 Adding a Session connection can query the selected site's login requirements and reuse saved third-party credentials to create a normal Session account. LinuxDO browser-assisted import only parses text the operator pastes manually; it does not read browser HttpOnly Cookies.
 

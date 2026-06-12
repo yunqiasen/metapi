@@ -14,8 +14,8 @@ const PROVIDERS: SiteAuthProviderDefinition[] = [
     metadata: {
       provider: 'github',
       label: 'GitHub',
-      credentialTypes: ['oauth_token', 'manual'],
-      captureModes: ['oauth_callback', 'manual_paste', 'browser_assisted'],
+      credentialTypes: ['oauth_token'],
+      captureModes: ['oauth_callback'],
       enabled: true,
     },
   },
@@ -23,8 +23,8 @@ const PROVIDERS: SiteAuthProviderDefinition[] = [
     metadata: {
       provider: 'google',
       label: 'Google',
-      credentialTypes: ['oauth_token', 'manual'],
-      captureModes: ['oauth_callback', 'manual_paste', 'browser_assisted'],
+      credentialTypes: ['oauth_token'],
+      captureModes: ['oauth_callback'],
       enabled: true,
     },
   },

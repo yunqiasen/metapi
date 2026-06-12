@@ -804,6 +804,26 @@ export type SiteAuthCredentialTargetSitesResponse = {
   items: SiteAuthCredentialTargetSiteInfo[];
 };
 
+export type SiteAuthAuthorizationStartResponse = {
+  provider: string;
+  state: string;
+  authorizationUrl: string;
+  instructions: {
+    redirectUri: string;
+    callbackPath: string;
+    manualCallbackDelayMs: number;
+    mode: "oauth" | "browser_login";
+  };
+};
+
+export type SiteAuthAuthorizationSessionResponse = {
+  provider: string;
+  state: string;
+  status: "pending" | "success" | "error";
+  error?: string;
+  credential?: SiteAuthCredentialInfo;
+};
+
 export type SiteAuthCredentialImportRequest = {
   provider: string;
   label?: string;
@@ -1337,6 +1357,12 @@ export const api = {
     request("/api/site-auth/credentials/decryptability") as Promise<SiteAuthCredentialDecryptabilityResponse>,
   getSiteAuthCredentialTargetSites: (credentialId: number) =>
     request(`/api/site-auth/credentials/${credentialId}/target-sites`) as Promise<SiteAuthCredentialTargetSitesResponse>,
+  startSiteAuthProviderAuthorization: (provider: string) =>
+    request(`/api/site-auth/providers/${encodeURIComponent(provider)}/start`, {
+      method: "POST",
+    }) as Promise<SiteAuthAuthorizationStartResponse>,
+  getSiteAuthAuthorizationSession: (state: string) =>
+    request(`/api/site-auth/sessions/${encodeURIComponent(state)}`) as Promise<SiteAuthAuthorizationSessionResponse>,
   importSiteAuthCredential: (data: SiteAuthCredentialImportRequest) =>
     request("/api/site-auth/credentials/import", {
       method: "POST",

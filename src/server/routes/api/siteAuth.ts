@@ -16,6 +16,13 @@ import {
 import { parseSiteAuthCaptureText } from '../../services/site-auth/browserCapture.js';
 import { verifySiteAuthCredential } from '../../services/site-auth/credentialVerifier.js';
 import { listSiteAuthProviderDefinitions } from '../../services/site-auth/providers.js';
+import type { SiteAuthProviderId } from '../../services/site-auth/providerTypes.js';
+import {
+  completeSiteAuthAuthorizationCallback,
+  getSiteAuthAuthorizationSession,
+  renderSiteAuthCallbackPage,
+  startSiteAuthAuthorization,
+} from '../../services/site-auth/authorizationFlow.js';
 import {
   listTargetSitesForSiteAuthProvider,
   resolveSiteAuthRequirementsForSite,
@@ -35,6 +42,12 @@ const limitSiteAuthCredentialRead = createRateLimitGuard({
 
 const limitSiteAuthCredentialImport = createRateLimitGuard({
   bucket: 'site-auth-credential-import',
+  max: 20,
+  windowMs: 60_000,
+});
+
+const limitSiteAuthAuthorizationStart = createRateLimitGuard({
+  bucket: 'site-auth-authorization-start',
   max: 20,
   windowMs: 60_000,
 });
@@ -64,6 +77,20 @@ function parsePositiveInteger(value: unknown): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function normalizeSiteAuthProvider(value: unknown): SiteAuthProviderId | null {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (normalized === 'linuxdo' || normalized === 'github' || normalized === 'google') return normalized;
+  return null;
+}
+
+function resolveRequestOrigin(request: { headers: Record<string, unknown>; protocol?: string; hostname?: string }): string {
+  const origin = typeof request.headers.origin === 'string' ? request.headers.origin.trim() : '';
+  if (origin) return origin;
+  const host = typeof request.headers.host === 'string' ? request.headers.host.trim() : '';
+  const protocol = request.protocol || 'http';
+  return host ? `${protocol}://${host}` : '';
+}
+
 export async function siteAuthRoutes(app: FastifyInstance) {
   app.get('/api/site-auth/providers', { preHandler: [limitSiteAuthProviderRead] }, async () => ({
     providers: listSiteAuthProviderDefinitions().map((definition) => definition.metadata),
@@ -80,6 +107,62 @@ export async function siteAuthRoutes(app: FastifyInstance) {
   app.get('/api/site-auth/credentials/decryptability', { preHandler: [limitSiteAuthCredentialRead] }, async () => (
     checkSiteAuthCredentialDecryptability()
   ));
+
+  app.post<{ Params: { provider: string } }>(
+    '/api/site-auth/providers/:provider/start',
+    { preHandler: [limitSiteAuthAuthorizationStart] },
+    async (request, reply) => {
+      const provider = normalizeSiteAuthProvider(request.params.provider);
+      if (!provider) {
+        return reply.code(400).send({ success: false, message: 'invalid site auth provider' });
+      }
+      try {
+        return startSiteAuthAuthorization(provider, resolveRequestOrigin(request));
+      } catch (error: any) {
+        return reply.code(400).send({ success: false, message: error?.message || 'site auth authorization start failed' });
+      }
+    },
+  );
+
+  app.get<{ Params: { state: string } }>(
+    '/api/site-auth/sessions/:state',
+    { preHandler: [limitSiteAuthCredentialRead] },
+    async (request, reply) => {
+      const state = String(request.params.state || '').trim();
+      const session = state ? getSiteAuthAuthorizationSession(state) : null;
+      if (!session) {
+        return reply.code(404).send({ success: false, message: 'site auth authorization session not found' });
+      }
+      return session;
+    },
+  );
+
+  app.get<{ Params: { provider: string }; Querystring: { state?: string; code?: string; error?: string } }>(
+    '/api/site-auth/callback/:provider',
+    async (request, reply) => {
+      const provider = normalizeSiteAuthProvider(request.params.provider);
+      if (!provider) {
+        return reply.code(400).type('text/html').send('Invalid provider');
+      }
+      try {
+        const session = await completeSiteAuthAuthorizationCallback({
+          provider,
+          state: String(request.query.state || ''),
+          code: request.query.code,
+          error: request.query.error,
+        });
+        return reply.type('text/html').send(renderSiteAuthCallbackPage(session));
+      } catch (error: any) {
+        const session = getSiteAuthAuthorizationSession(String(request.query.state || '')) || {
+          provider,
+          state: String(request.query.state || ''),
+          status: 'error' as const,
+          error: error?.message || 'site auth authorization callback failed',
+        };
+        return reply.code(400).type('text/html').send(renderSiteAuthCallbackPage(session));
+      }
+    },
+  );
 
   app.post<{ Body: unknown }>(
     '/api/site-auth/credentials/import',

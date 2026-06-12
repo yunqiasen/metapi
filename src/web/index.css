@@ -3584,6 +3584,17 @@ textarea {
   color: var(--color-text-primary);
 }
 
+.oauth-create-mode-toggle .oauth-toggle {
+  cursor: pointer;
+}
+
+.oauth-create-mode-toggle .oauth-toggle.is-active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+  box-shadow: var(--shadow-sm);
+}
+
 .oauth-panel-title {
   margin-bottom: 12px;
   font-size: 13px;

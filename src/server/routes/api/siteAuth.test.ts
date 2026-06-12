@@ -24,6 +24,10 @@ describe('site auth routes', () => {
   beforeAll(async () => {
     process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'metapi-site-auth-routes-'));
     process.env.ACCOUNT_CREDENTIAL_SECRET = 'site-auth-routes-test-secret';
+    process.env.SITE_AUTH_GITHUB_CLIENT_ID = 'github-client-id';
+    process.env.SITE_AUTH_GITHUB_CLIENT_SECRET = 'github-client-secret';
+    process.env.SITE_AUTH_GOOGLE_CLIENT_ID = 'google-client-id';
+    process.env.SITE_AUTH_GOOGLE_CLIENT_SECRET = 'google-client-secret';
 
     await import('../../db/migrate.js');
     const dbModule = await import('../../db/index.js');
@@ -89,6 +93,58 @@ describe('site auth routes', () => {
       ],
       total: 1,
     });
+  });
+
+  it('starts GitHub browser authorization and saves the exchanged credential on callback', async () => {
+    const startResponse = await app.inject({
+      method: 'POST',
+      url: '/api/site-auth/providers/github/start',
+      headers: { origin: 'http://metapi.local' },
+    });
+
+    expect(startResponse.statusCode).toBe(200);
+    const startBody = startResponse.json();
+    expect(startBody.authorizationUrl).toContain('https://github.com/login/oauth/authorize');
+    expect(startBody.authorizationUrl).toContain(encodeURIComponent('http://metapi.local/api/site-auth/callback/github'));
+    expect(startBody.instructions).toMatchObject({
+      redirectUri: 'http://metapi.local/api/site-auth/callback/github',
+      mode: 'oauth',
+    });
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: 'gho-secret-token', token_type: 'bearer', scope: 'read:user,user:email' }),
+    });
+
+    const callbackResponse = await app.inject({
+      method: 'GET',
+      url: `/api/site-auth/callback/github?state=${encodeURIComponent(startBody.state)}&code=github-code-1`,
+    });
+
+    expect(callbackResponse.statusCode).toBe(200);
+    expect(callbackResponse.body).toContain('授权已保存');
+    expect(callbackResponse.body).not.toContain('gho-secret-token');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://github.com/login/oauth/access_token',
+      expect.objectContaining({ method: 'POST' }),
+    );
+
+    const sessionResponse = await app.inject({
+      method: 'GET',
+      url: `/api/site-auth/sessions/${encodeURIComponent(startBody.state)}`,
+    });
+    expect(sessionResponse.statusCode).toBe(200);
+    expect(sessionResponse.body).not.toContain('gho-secret-token');
+    expect(sessionResponse.json()).toMatchObject({
+      provider: 'github',
+      state: startBody.state,
+      status: 'success',
+      credential: expect.objectContaining({ provider: 'github', credentialType: 'oauth_token' }),
+    });
+
+    const payload = await vault.getSiteAuthCredentialPayload(sessionResponse.json().credential.id);
+    expect(payload).toMatchObject({ accessToken: 'gho-secret-token' });
   });
 
   it('reports credential decryptability without leaking payloads', async () => {

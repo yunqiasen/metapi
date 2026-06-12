@@ -27,6 +27,7 @@ describe('oauth route registration', () => {
   it('treats oauth callback route as a public desktop API route', () => {
     expect(isPublicApiRoute('/api/oauth/callback/codex')).toBe(true);
     expect(isPublicApiRoute('/api/oauth/callback/claude')).toBe(true);
+    expect(isPublicApiRoute('/api/site-auth/callback/github')).toBe(true);
     expect(isPublicApiRoute('/api/oauth/providers')).toBe(false);
   });
 });

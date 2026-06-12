@@ -80,4 +80,44 @@ describe('site auth routes', () => {
       total: 1,
     });
   });
+
+  it('imports a manual LinuxDO credential without returning secret payloads', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/site-auth/credentials/import',
+      payload: {
+        provider: 'linuxdo',
+        label: '主 LinuxDO',
+        credentialType: 'cookie',
+        subject: 'linuxdo-user-42',
+        email: 'linuxdo-user@example.com',
+        username: 'linuxdo-user',
+        payload: {
+          cookie: 'ld_auth_session=super-secret-session',
+          userId: 42,
+        },
+        metadata: { source: 'manual-api-test' },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain('super-secret-session');
+    expect(response.json()).toMatchObject({
+      success: true,
+      item: {
+        provider: 'linuxdo',
+        label: '主 LinuxDO',
+        credentialType: 'cookie',
+        subject: 'linuxdo-user-42',
+        email: 'linuxdo-user@example.com',
+        username: 'linuxdo-user',
+        status: 'active',
+        metadata: { source: 'manual-api-test' },
+      },
+    });
+
+    const rows = await db.select().from(schema.siteAuthCredentials).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.encryptedPayload).not.toContain('super-secret-session');
+  });
 });

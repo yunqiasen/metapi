@@ -31,6 +31,7 @@ import {
   type OAuthStartInstructions,
   type SiteAuthCredentialDecryptabilityResponse,
   type SiteAuthCredentialInfo,
+  type SiteAuthCredentialTargetSitesResponse,
   type SiteAuthProviderInfo,
 } from '../api.js';
 
@@ -658,6 +659,10 @@ export default function OAuthManagement() {
   const [siteAuthCredentials, setSiteAuthCredentials] = useState<SiteAuthCredentialInfo[]>([]);
   const [siteAuthCredentialDecryptability, setSiteAuthCredentialDecryptability] =
     useState<SiteAuthCredentialDecryptabilityResponse | null>(null);
+  const [siteAuthTargetSitesByCredentialId, setSiteAuthTargetSitesByCredentialId] =
+    useState<Record<number, SiteAuthCredentialTargetSitesResponse | undefined>>({});
+  const [loadingSiteAuthTargetSitesCredentialId, setLoadingSiteAuthTargetSitesCredentialId] =
+    useState<number | null>(null);
   const [siteAuthImportOpen, setSiteAuthImportOpen] = useState(false);
   const [siteAuthImportProvider, setSiteAuthImportProvider] = useState<SiteAuthImportProvider>('linuxdo');
   const [siteAuthImportLabel, setSiteAuthImportLabel] = useState('');
@@ -937,11 +942,31 @@ export default function OAuthManagement() {
     try {
       await api.deleteSiteAuthCredential(credentialId);
       await loadSiteAuthCredentials();
+      setSiteAuthTargetSitesByCredentialId((current) => {
+        const next = { ...current };
+        delete next[credentialId];
+        return next;
+      });
       toast.success('第三方登录凭证已删除');
     } catch (error: any) {
       toast.error(error?.message || '第三方登录凭证删除失败');
     }
   }, [loadSiteAuthCredentials, toast]);
+
+  const handleLoadSiteAuthTargetSites = useCallback(async (credentialId: number) => {
+    setLoadingSiteAuthTargetSitesCredentialId(credentialId);
+    try {
+      const response = await api.getSiteAuthCredentialTargetSites(credentialId);
+      setSiteAuthTargetSitesByCredentialId((current) => ({
+        ...current,
+        [credentialId]: response,
+      }));
+    } catch (error: any) {
+      toast.error(error?.message || '加载可用站点失败');
+    } finally {
+      setLoadingSiteAuthTargetSitesCredentialId(null);
+    }
+  }, [toast]);
 
   useEffect(() => {
     void load();
@@ -2316,7 +2341,10 @@ export default function OAuthManagement() {
           onImportCredential={openSiteAuthImportModal}
           onVerifyCredential={handleVerifySiteAuthCredential}
           onDeleteCredential={handleDeleteSiteAuthCredential}
+          onLoadTargetSites={handleLoadSiteAuthTargetSites}
           verifyingCredentialId={verifyingSiteAuthCredentialId}
+          targetSitesByCredentialId={siteAuthTargetSitesByCredentialId}
+          loadingTargetSitesCredentialId={loadingSiteAuthTargetSitesCredentialId}
         />
       </div>
 

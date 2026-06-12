@@ -789,6 +789,21 @@ export type SiteAuthCredentialDecryptabilityResponse = {
   }>;
 };
 
+export type SiteAuthCredentialTargetSiteInfo = {
+  id: number;
+  name: string;
+  url: string;
+  platform: string;
+  status?: string | null;
+  requirementReason?: string | null;
+};
+
+export type SiteAuthCredentialTargetSitesResponse = {
+  credentialId: number;
+  total: number;
+  items: SiteAuthCredentialTargetSiteInfo[];
+};
+
 export type SiteAuthCredentialImportRequest = {
   provider: string;
   label?: string;
@@ -1320,6 +1335,8 @@ export const api = {
     request("/api/site-auth/credentials") as Promise<SiteAuthCredentialsResponse>,
   getSiteAuthCredentialDecryptability: () =>
     request("/api/site-auth/credentials/decryptability") as Promise<SiteAuthCredentialDecryptabilityResponse>,
+  getSiteAuthCredentialTargetSites: (credentialId: number) =>
+    request(`/api/site-auth/credentials/${credentialId}/target-sites`) as Promise<SiteAuthCredentialTargetSitesResponse>,
   importSiteAuthCredential: (data: SiteAuthCredentialImportRequest) =>
     request("/api/site-auth/credentials/import", {
       method: "POST",

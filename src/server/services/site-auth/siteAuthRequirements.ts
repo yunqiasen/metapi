@@ -23,6 +23,15 @@ type ResolveSiteAuthRequirementsInput = {
   html?: string | null;
 };
 
+export type SiteAuthTargetSite = {
+  id: number;
+  name: string;
+  url: string;
+  platform: string;
+  status?: string | null;
+  requirementReason?: string | null;
+};
+
 const SITE_AUTH_REQUIREMENTS_HTML_TIMEOUT_MS = 10_000;
 const SITE_AUTH_REQUIREMENTS_HTML_MAX_BYTES = 256_000;
 
@@ -131,4 +140,27 @@ export async function resolveSiteAuthRequirementsForSite(
 
   const html = await fetchSiteLoginHtml(site);
   return resolveSiteAuthRequirements({ site, html });
+}
+
+export async function listTargetSitesForSiteAuthProvider(
+  provider: SiteAuthProviderId,
+  sites: SiteAuthRequirementSiteInput[],
+): Promise<SiteAuthTargetSite[]> {
+  const targetSites: SiteAuthTargetSite[] = [];
+  for (const site of sites) {
+    const result = await resolveSiteAuthRequirementsForSite(site);
+    const matchingRequirement = result.requirements.find((requirement) => requirement.provider === provider);
+    if (!matchingRequirement) continue;
+    targetSites.push({
+      id: site.id,
+      name: site.name || `site-${site.id}`,
+      url: site.url || '',
+      platform: site.platform || '',
+      status: typeof (site as { status?: unknown }).status === 'string'
+        ? (site as { status?: string }).status
+        : null,
+      requirementReason: matchingRequirement.reason,
+    });
+  }
+  return targetSites;
 }

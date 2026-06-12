@@ -291,6 +291,61 @@ describe('site auth routes', () => {
     });
   });
 
+  it('returns target sites for a site auth credential without leaking payloads', async () => {
+    const [linuxDoSite] = await db.insert(schema.sites).values({
+      name: 'LinuxDO Target Site',
+      url: 'https://linuxdo-target.example.com',
+      platform: 'new-api',
+      status: 'active',
+    }).returning();
+    await db.insert(schema.sites).values({
+      name: 'Plain Target Site',
+      url: 'https://plain-target.example.com',
+      platform: 'new-api',
+      status: 'active',
+    }).run();
+    const credential = await vault.createSiteAuthCredential({
+      provider: 'linuxdo',
+      label: '主 LinuxDO',
+      credentialType: 'cookie',
+      payload: { cookie: 'ld_auth_session=target-sites-secret' },
+      status: 'active',
+    });
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'text/html; charset=utf-8' },
+        text: async () => '<html><body><button>使用 LinuxDO 继续</button></body></html>',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'text/html; charset=utf-8' },
+        text: async () => '<html><body><form>password login</form></body></html>',
+      });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/site-auth/credentials/${credential.id}/target-sites`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain('target-sites-secret');
+    expect(response.body).not.toContain('ld_auth_session');
+    expect(response.json()).toMatchObject({
+      credentialId: credential.id,
+      total: 1,
+      items: [
+        expect.objectContaining({
+          id: linuxDoSite.id,
+          name: 'LinuxDO Target Site',
+          platform: 'new-api',
+        }),
+      ],
+    });
+  });
+
   it('deletes a credential summary by id', async () => {
     const created = await vault.createSiteAuthCredential({
       provider: 'linuxdo',

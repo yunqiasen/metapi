@@ -22,6 +22,7 @@ const { apiMock, openMock, focusMock, confirmMock, promptMock } = vi.hoisted(() 
     getSiteAuthProviders: vi.fn(),
     getSiteAuthCredentials: vi.fn(),
     getSiteAuthCredentialDecryptability: vi.fn(),
+    getSiteAuthCredentialTargetSites: vi.fn(),
     importSiteAuthCredential: vi.fn(),
     parseSiteAuthCredentialCapture: vi.fn(),
     verifySiteAuthCredential: vi.fn(),
@@ -117,6 +118,11 @@ describe('OAuthManagement page', () => {
       total: 0,
       decryptable: 0,
       failed: 0,
+      items: [],
+    });
+    apiMock.getSiteAuthCredentialTargetSites.mockResolvedValue({
+      credentialId: 0,
+      total: 0,
       items: [],
     });
   });
@@ -345,6 +351,69 @@ describe('OAuthManagement page', () => {
         expect(text).toContain('有 1 个第三方登录凭证无法解密，请确认 data/ 与 ACCOUNT_CREDENTIAL_SECRET 来自同一次部署。');
         expect(text).toContain('迁移失败凭证');
       });
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('expands target sites for a third-party login credential', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthCredentials.mockResolvedValue({
+      items: [
+        {
+          id: 21,
+          provider: 'linuxdo',
+          label: '主 LinuxDO',
+          subject: 'linuxdo-user-42',
+          credentialType: 'cookie',
+          status: 'active',
+          metadata: {},
+        },
+      ],
+      total: 1,
+    });
+    apiMock.getSiteAuthCredentialTargetSites.mockResolvedValue({
+      credentialId: 21,
+      total: 1,
+      items: [
+        {
+          id: 10,
+          name: '哈基米',
+          url: 'https://api.gemai.cc',
+          platform: 'new-api',
+          status: 'active',
+          requirementReason: 'login page contains this provider',
+        },
+      ],
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('主 LinuxDO');
+      });
+
+      await clickButton(root!, '可用站点');
+
+      expect(apiMock.getSiteAuthCredentialTargetSites).toHaveBeenCalledWith(21);
+      expect(collectText(root.root)).toContain('哈基米');
+      expect(collectText(root.root)).toContain('new-api');
     } finally {
       root?.unmount();
     }

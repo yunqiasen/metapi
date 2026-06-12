@@ -1,6 +1,7 @@
 import type {
   SiteAuthCredentialDecryptabilityResponse,
   SiteAuthCredentialInfo,
+  SiteAuthCredentialTargetSitesResponse,
   SiteAuthProviderInfo,
 } from '../../api.js';
 
@@ -12,7 +13,10 @@ type SiteAuthCredentialPanelProps = {
   onImportCredential: (provider: string) => void;
   onVerifyCredential: (credentialId: number) => void;
   onDeleteCredential: (credentialId: number) => void;
+  onLoadTargetSites: (credentialId: number) => void;
   verifyingCredentialId?: number | null;
+  targetSitesByCredentialId?: Record<number, SiteAuthCredentialTargetSitesResponse | undefined>;
+  loadingTargetSitesCredentialId?: number | null;
 };
 
 function resolveCredentialTypeLabel(value: string): string {
@@ -41,7 +45,10 @@ export default function SiteAuthCredentialPanel({
   onImportCredential,
   onVerifyCredential,
   onDeleteCredential,
+  onLoadTargetSites,
   verifyingCredentialId,
+  targetSitesByCredentialId = {},
+  loadingTargetSitesCredentialId = null,
 }: SiteAuthCredentialPanelProps) {
   const visibleProviders = providers.length > 0
     ? providers
@@ -145,12 +152,34 @@ export default function SiteAuthCredentialPanel({
                 </button>
                 <button
                   type="button"
+                  className="btn btn-link btn-link-info oauth-site-auth-target-sites"
+                  onClick={() => onLoadTargetSites(credential.id)}
+                  disabled={loadingTargetSitesCredentialId === credential.id}
+                >
+                  {loadingTargetSitesCredentialId === credential.id ? '加载中...' : '可用站点'}
+                </button>
+                <button
+                  type="button"
                   className="btn btn-link btn-link-danger oauth-site-auth-delete"
                   onClick={() => onDeleteCredential(credential.id)}
                 >
                   删除
                 </button>
               </div>
+              {targetSitesByCredentialId[credential.id] ? (
+                <div className="oauth-site-auth-target-sites-list">
+                  {targetSitesByCredentialId[credential.id]?.items.length ? (
+                    targetSitesByCredentialId[credential.id]?.items.map((site) => (
+                      <div key={site.id} className="oauth-site-auth-target-site">
+                        <span className="oauth-cell-primary">{site.name}</span>
+                        <span className="badge badge-muted">{site.platform}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="oauth-cell-tertiary">暂未发现可复用该凭证登录的站点。</div>
+                  )}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>

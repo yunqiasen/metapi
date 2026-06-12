@@ -3151,6 +3151,7 @@ textarea {
 
 .oauth-site-auth-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
@@ -3165,6 +3166,21 @@ textarea {
   justify-items: end;
   gap: 5px;
   flex: 0 0 auto;
+}
+
+.oauth-site-auth-target-sites-list {
+  flex: 0 0 100%;
+  display: grid;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.oauth-site-auth-target-site {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .oauth-workbench-head {

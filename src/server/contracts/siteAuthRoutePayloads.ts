@@ -37,6 +37,19 @@ export type SiteAuthCredentialDecryptabilityResponse = {
   }>;
 };
 
+export type SiteAuthCredentialTargetSitesResponse = {
+  credentialId: number;
+  total: number;
+  items: Array<{
+    id: number;
+    name: string;
+    url: string;
+    platform: string;
+    status?: string | null;
+    requirementReason?: string | null;
+  }>;
+};
+
 function normalizeSiteAuthPayloadInput(input: unknown): unknown {
   return input === undefined ? {} : input;
 }

@@ -10,12 +10,16 @@ import {
   checkSiteAuthCredentialDecryptability,
   createSiteAuthCredential,
   deleteSiteAuthCredential,
+  getSiteAuthCredential,
   listSiteAuthCredentials,
 } from '../../services/site-auth/credentialVault.js';
 import { parseSiteAuthCaptureText } from '../../services/site-auth/browserCapture.js';
 import { verifySiteAuthCredential } from '../../services/site-auth/credentialVerifier.js';
 import { listSiteAuthProviderDefinitions } from '../../services/site-auth/providers.js';
-import { resolveSiteAuthRequirementsForSite } from '../../services/site-auth/siteAuthRequirements.js';
+import {
+  listTargetSitesForSiteAuthProvider,
+  resolveSiteAuthRequirementsForSite,
+} from '../../services/site-auth/siteAuthRequirements.js';
 
 const limitSiteAuthProviderRead = createRateLimitGuard({
   bucket: 'site-auth-provider-read',
@@ -161,6 +165,30 @@ export async function siteAuthRoutes(app: FastifyInstance) {
             credential.provider === requirement.provider && credential.status === 'active'
           )),
         })),
+      };
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    '/api/site-auth/credentials/:id/target-sites',
+    { preHandler: [limitSiteAuthCredentialRead] },
+    async (request, reply) => {
+      const credentialId = parsePositiveInteger(request.params.id);
+      if (!credentialId) {
+        return reply.code(400).send({ success: false, message: 'invalid credential id' });
+      }
+
+      const credential = await getSiteAuthCredential(credentialId);
+      if (!credential) {
+        return reply.code(404).send({ success: false, message: 'site auth credential not found' });
+      }
+
+      const sites = await db.select().from(schema.sites).all();
+      const items = await listTargetSitesForSiteAuthProvider(credential.provider, sites);
+      return {
+        credentialId,
+        total: items.length,
+        items,
       };
     },
   );

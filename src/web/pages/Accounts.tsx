@@ -136,6 +136,8 @@ export default function Accounts() {
     useState(false);
   const [siteAuthRequirementSiteId, setSiteAuthRequirementSiteId] =
     useState<number | null>(null);
+  const [siteAuthLoginCredentialId, setSiteAuthLoginCredentialId] =
+    useState<number | null>(null);
   const [createIntentPresetId, setCreateIntentPresetId] = useState<
     string | null
   >(null);
@@ -312,8 +314,25 @@ export default function Accounts() {
     navigate({ pathname: "/oauth", search: `?${params.toString()}` });
   };
 
-  const handleUseSiteAuthCredential = (credential: SiteAuthCredentialInfo) => {
-    toast.info(`凭证「${credential.label}」登录创建会在下一步接入`);
+  const handleUseSiteAuthCredential = async (credential: SiteAuthCredentialInfo) => {
+    if (!tokenForm.siteId) {
+      toast.error("请先选择站点");
+      return;
+    }
+    setSiteAuthLoginCredentialId(credential.id);
+    try {
+      await api.createAccountFromSiteAuthCredential({
+        siteId: tokenForm.siteId,
+        credentialId: credential.id,
+      });
+      closeAddPanel();
+      toast.success("已创建 Session 连接");
+      void load(true);
+    } catch (error: any) {
+      toast.error(error?.message || "使用第三方凭证创建连接失败");
+    } finally {
+      setSiteAuthLoginCredentialId(null);
+    }
   };
 
   const resetAddForms = (
@@ -328,6 +347,7 @@ export default function Accounts() {
     setSiteAuthRequirements(null);
     setSiteAuthRequirementSiteId(null);
     setSiteAuthRequirementsLoading(false);
+    setSiteAuthLoginCredentialId(null);
   };
 
   const closeAddPanel = () => {
@@ -1768,6 +1788,7 @@ export default function Accounts() {
                         siteAuthRequirementsLoading &&
                         siteAuthRequirementSiteId === tokenForm.siteId
                       }
+                      loggingInCredentialId={siteAuthLoginCredentialId}
                       onAddCredential={handleAddSiteAuthCredential}
                       onUseCredential={handleUseSiteAuthCredential}
                     />

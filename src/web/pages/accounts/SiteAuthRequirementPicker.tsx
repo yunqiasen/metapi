@@ -2,10 +2,12 @@ import type {
   SiteAuthCredentialInfo,
   SiteAuthRequirementsResponse,
 } from '../../api.js';
+import SiteAuthLoginBridge from './SiteAuthLoginBridge.js';
 
 type SiteAuthRequirementPickerProps = {
   data: SiteAuthRequirementsResponse | null;
   loading?: boolean;
+  loggingInCredentialId?: number | null;
   onAddCredential: (provider: string) => void;
   onUseCredential: (credential: SiteAuthCredentialInfo) => void;
 };
@@ -13,6 +15,7 @@ type SiteAuthRequirementPickerProps = {
 export default function SiteAuthRequirementPicker({
   data,
   loading = false,
+  loggingInCredentialId = null,
   onAddCredential,
   onUseCredential,
 }: SiteAuthRequirementPickerProps) {
@@ -41,14 +44,12 @@ export default function SiteAuthRequirementPicker({
               </div>
               <div className="site-auth-provider-actions">
                 {credentials.map((credential) => (
-                  <button
-                    type="button"
-                    className="btn btn-ghost site-auth-provider-action"
+                  <SiteAuthLoginBridge
                     key={credential.id}
-                    onClick={() => onUseCredential(credential)}
-                  >
-                    使用该凭证登录站点 · {credential.label}
-                  </button>
+                    credential={credential}
+                    loading={loggingInCredentialId === credential.id}
+                    onUseCredential={onUseCredential}
+                  />
                 ))}
                 {credentials.length === 0 ? (
                   <button

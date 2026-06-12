@@ -830,6 +830,12 @@ export type SiteAuthRequirementsResponse = {
   requirements: SiteAuthRequirementInfo[];
 };
 
+export type CreateAccountFromSiteAuthCredentialRequest = {
+  siteId: number;
+  credentialId: number;
+  username?: string;
+};
+
 export type DownstreamApiKeyTrendBucket = {
   startUtc: string | null;
   totalRequests: number;
@@ -1319,6 +1325,12 @@ export const api = {
     }) as Promise<SiteAuthCredentialCaptureParseResponse>,
   getSiteAuthRequirements: (siteId: number) =>
     request(`/api/sites/${siteId}/auth-requirements`) as Promise<SiteAuthRequirementsResponse>,
+  createAccountFromSiteAuthCredential: (data: CreateAccountFromSiteAuthCredentialRequest) =>
+    request("/api/accounts/site-auth-login", {
+      method: "POST",
+      body: JSON.stringify(data),
+      timeoutMs: 45_000,
+    }),
 
   // Events
   getEvents: (params?: string) =>

@@ -1,6 +1,9 @@
 services:
   metapi:
-    image: node:22-bookworm-slim
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    image: yunqiasen/metapi-dev:metapi-fork
     container_name: metapi
     working_dir: /app
     ports:
@@ -25,8 +28,7 @@ services:
       VITE_FRONTEND_PORT: ${FRONTEND_PORT:-5173}
       DEV_PROXY_TARGET: http://127.0.0.1:${PORT:-4000}
       CHOKIDAR_USEPOLLING: ${CHOKIDAR_USEPOLLING:-true}
-    command: >
-      sh -lc "if [ ! -x ./node_modules/.bin/vite ] || [ ! -x ./node_modules/.bin/tsx ] || [ ! -x ./node_modules/.bin/concurrently ]; then npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm install --omit=dev --no-save --ignore-scripts --no-audit --no-fund tsx@^4.19.2 vite@^6.4.2 concurrently@^9.1.0 typescript@^6.0.3 @vitejs/plugin-react@^4.3.4 @tailwindcss/vite@^4.3.0 && npm rebuild esbuild sharp better-sqlite3 --no-audit --no-fund; fi; ./node_modules/.bin/concurrently \"npm run dev:server\" \"./node_modules/.bin/vite --host 0.0.0.0 --port ${FRONTEND_PORT:-5173}\""
+    command: ./scripts/dev/docker-entrypoint.sh
     restart: unless-stopped
 
 volumes:

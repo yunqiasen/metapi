@@ -47,6 +47,20 @@ export type CreateSiteAuthCredentialInput = {
   metadata?: Record<string, unknown> | null;
 };
 
+export type UpdateSiteAuthCredentialInput = Partial<{
+  label: string | null;
+  subject: string | null;
+  email: string | null;
+  username: string | null;
+  status: SiteAuthCredentialStatus;
+  expiresAt: string | null;
+  lastVerifiedAt: string | null;
+  lastError: string | null;
+  proxyUrl: string | null;
+  useSystemProxy: boolean | null;
+  metadata: Record<string, unknown> | null;
+}>;
+
 type SiteAuthCredentialRow = typeof schema.siteAuthCredentials.$inferSelect;
 
 function parseJsonRecord(value?: string | null): Record<string, unknown> {
@@ -150,6 +164,42 @@ export async function listSiteAuthCredentials(): Promise<SiteAuthCredentialSumma
     .orderBy(desc(schema.siteAuthCredentials.id))
     .all();
   return rows.map(mapCredentialSummary);
+}
+
+export async function getSiteAuthCredential(id: number): Promise<SiteAuthCredentialSummary | null> {
+  const row = await db
+    .select()
+    .from(schema.siteAuthCredentials)
+    .where(eq(schema.siteAuthCredentials.id, id))
+    .get();
+  return row ? mapCredentialSummary(row) : null;
+}
+
+export async function updateSiteAuthCredential(
+  id: number,
+  input: UpdateSiteAuthCredentialInput,
+): Promise<SiteAuthCredentialSummary | null> {
+  const values: Record<string, unknown> = {
+    updatedAt: new Date().toISOString(),
+  };
+  if ('label' in input) values.label = input.label || null;
+  if ('subject' in input) values.subject = input.subject || null;
+  if ('email' in input) values.email = input.email || null;
+  if ('username' in input) values.username = input.username || null;
+  if ('status' in input) values.status = input.status;
+  if ('expiresAt' in input) values.expiresAt = input.expiresAt || null;
+  if ('lastVerifiedAt' in input) values.lastVerifiedAt = input.lastVerifiedAt || null;
+  if ('lastError' in input) values.lastError = input.lastError || null;
+  if ('proxyUrl' in input) values.proxyUrl = input.proxyUrl || null;
+  if ('useSystemProxy' in input) values.useSystemProxy = input.useSystemProxy ?? false;
+  if ('metadata' in input) values.metadata = stringifyJsonRecord(input.metadata);
+
+  await db
+    .update(schema.siteAuthCredentials)
+    .set(values)
+    .where(eq(schema.siteAuthCredentials.id, id))
+    .run();
+  return getSiteAuthCredential(id);
 }
 
 export async function getSiteAuthCredentialPayload(id: number): Promise<SiteAuthCredentialPayload | null> {

@@ -2,7 +2,15 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { fetchMock } = vi.hoisted(() => ({
+  fetchMock: vi.fn(),
+}));
+
+vi.mock('undici', () => ({
+  fetch: (...args: unknown[]) => fetchMock(...args),
+}));
 
 type DbModule = typeof import('../../db/index.js');
 type VaultModule = typeof import('../../services/site-auth/credentialVault.js');
@@ -29,6 +37,7 @@ describe('site auth routes', () => {
   });
 
   beforeEach(async () => {
+    fetchMock.mockReset();
     await db.delete(schema.siteAuthCredentials).run();
   });
 
@@ -119,5 +128,57 @@ describe('site auth routes', () => {
     const rows = await db.select().from(schema.siteAuthCredentials).all();
     expect(rows).toHaveLength(1);
     expect(rows[0]?.encryptedPayload).not.toContain('super-secret-session');
+  });
+
+  it('verifies a LinuxDO cookie credential and updates identity metadata', async () => {
+    const created = await vault.createSiteAuthCredential({
+      provider: 'linuxdo',
+      label: '待校验 LinuxDO',
+      credentialType: 'cookie',
+      payload: { cookie: 'ld_auth_session=super-secret-session' },
+      status: 'invalid',
+      lastError: 'previous failure',
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        current_user: {
+          id: 42,
+          username: 'linuxdo-user',
+          email: 'linuxdo-user@example.com',
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/site-auth/credentials/${created.id}/verify`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain('super-secret-session');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://linux.do/session/current.json',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Cookie: 'ld_auth_session=super-secret-session',
+          Accept: 'application/json',
+        }),
+      }),
+    );
+    expect(response.json()).toMatchObject({
+      success: true,
+      item: {
+        id: created.id,
+        provider: 'linuxdo',
+        status: 'active',
+        subject: '42',
+        username: 'linuxdo-user',
+        email: 'linuxdo-user@example.com',
+        lastError: null,
+      },
+    });
+    expect(response.json().item.lastVerifiedAt).toEqual(expect.any(String));
   });
 });

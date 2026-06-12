@@ -42,7 +42,7 @@ Dev URLs:
 - Tailscale UI on this machine: `http://100.126.43.55:5173`
 - Tailscale API on this machine: `http://100.126.43.55:4000`
 
-The dev container bind-mounts the repository into `/app` and stores Linux dependencies in the named volume `metapi_node_modules`. It installs production dependencies, adds only the required dev server tools, then rebuilds `esbuild`, `sharp`, and `better-sqlite3` inside Linux to avoid Electron desktop packaging dependencies. If `package-lock.json` changes, recreate the dev container or remove the named volume.
+The dev container bind-mounts the repository into `/app` and stores Linux dependencies in the named volume `metapi_node_modules`. It installs production dependencies, adds only the required dev server tools with `--omit=dev`, then rebuilds `esbuild`, `sharp`, and `better-sqlite3` inside Linux to avoid Electron desktop packaging dependencies. If `package-lock.json` changes, recreate the dev container or remove the named volume.
 
 ## Update from upstream
 

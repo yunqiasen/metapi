@@ -740,6 +740,42 @@ export type OAuthRouteUnitMutationResponse = {
   routeUnit?: OAuthRouteUnitSummary;
 };
 
+export type SiteAuthProviderInfo = {
+  provider: string;
+  label: string;
+  credentialTypes: string[];
+  captureModes: string[];
+  enabled: boolean;
+};
+
+export type SiteAuthProvidersResponse = {
+  providers: SiteAuthProviderInfo[];
+};
+
+export type SiteAuthCredentialInfo = {
+  id: number;
+  provider: string;
+  label: string;
+  subject?: string | null;
+  email?: string | null;
+  username?: string | null;
+  credentialType: string;
+  status: "active" | "expired" | "invalid" | "disabled";
+  expiresAt?: string | null;
+  lastVerifiedAt?: string | null;
+  lastError?: string | null;
+  proxyUrl?: string | null;
+  useSystemProxy?: boolean | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type SiteAuthCredentialsResponse = {
+  items: SiteAuthCredentialInfo[];
+  total: number;
+};
+
 export type DownstreamApiKeyTrendBucket = {
   startUtc: string | null;
   totalRequests: number;
@@ -1203,6 +1239,12 @@ export const api = {
     request(`/api/oauth/route-units/${routeUnitId}`, {
       method: "DELETE",
     }) as Promise<{ success: true }>,
+
+  // Site auth credentials
+  getSiteAuthProviders: () =>
+    request("/api/site-auth/providers") as Promise<SiteAuthProvidersResponse>,
+  getSiteAuthCredentials: () =>
+    request("/api/site-auth/credentials") as Promise<SiteAuthCredentialsResponse>,
 
   // Events
   getEvents: (params?: string) =>

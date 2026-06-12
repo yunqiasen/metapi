@@ -29,6 +29,8 @@ import {
   type OAuthQuotaInfo,
   type OAuthQuotaWindowInfo,
   type OAuthStartInstructions,
+  type SiteAuthCredentialInfo,
+  type SiteAuthProviderInfo,
 } from '../api.js';
 
 const POLL_INTERVAL_MS = 1500;
@@ -632,6 +634,8 @@ export default function OAuthManagement() {
   const modelsModalRequestSeqRef = useRef(0);
   const [providers, setProviders] = useState<OAuthProviderInfo[]>([]);
   const [connections, setConnections] = useState<OAuthConnectionInfo[]>([]);
+  const [siteAuthProviders, setSiteAuthProviders] = useState<SiteAuthProviderInfo[]>([]);
+  const [siteAuthCredentials, setSiteAuthCredentials] = useState<SiteAuthCredentialInfo[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [sessionFeedback, setSessionFeedback] = useState<SessionFeedback | null>(null);
   const [actionLoadingKey, setActionLoadingKey] = useState('');
@@ -772,13 +776,23 @@ export default function OAuthManagement() {
 
   const load = useCallback(async () => {
     try {
-      const [providersResponse] = await Promise.all([
+      const [providersResponse, siteAuthProvidersResponse, siteAuthCredentialsResponse] = await Promise.all([
         api.getOAuthProviders(),
+        api.getSiteAuthProviders(),
+        api.getSiteAuthCredentials(),
         loadConnections(),
       ]);
       const nextProviders = Array.isArray(providersResponse?.providers) ? providersResponse.providers : [];
+      const nextSiteAuthProviders = Array.isArray(siteAuthProvidersResponse?.providers)
+        ? siteAuthProvidersResponse.providers
+        : [];
+      const nextSiteAuthCredentials = Array.isArray(siteAuthCredentialsResponse?.items)
+        ? siteAuthCredentialsResponse.items
+        : [];
       setRuntimeSystemProxyConfigured(providersResponse?.defaults?.systemProxyConfigured === true);
       setProviders(nextProviders);
+      setSiteAuthProviders(nextSiteAuthProviders);
+      setSiteAuthCredentials(nextSiteAuthCredentials);
       setSelectedProviderKey((current) => current || nextProviders[0]?.provider || '');
     } catch (error: any) {
       console.error('failed to load oauth management data', error);
@@ -2153,7 +2167,11 @@ export default function OAuthManagement() {
           )}
         </ProviderConnectionPanel>
 
-        <SiteAuthCredentialPanel />
+        <SiteAuthCredentialPanel
+          providers={siteAuthProviders}
+          credentials={siteAuthCredentials}
+          loaded={loaded}
+        />
       </div>
 
       <SideDrawer

@@ -19,6 +19,8 @@ const { apiMock, openMock, focusMock, confirmMock, promptMock } = vi.hoisted(() 
     importOAuthConnections: vi.fn(),
     createOAuthRouteUnit: vi.fn(),
     deleteOAuthRouteUnit: vi.fn(),
+    getSiteAuthProviders: vi.fn(),
+    getSiteAuthCredentials: vi.fn(),
     getAccountModels: vi.fn(),
     checkModels: vi.fn(),
   },
@@ -104,6 +106,8 @@ describe('OAuthManagement page', () => {
       setTimeout,
       clearTimeout,
     } as unknown as Window & typeof globalThis);
+    apiMock.getSiteAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getSiteAuthCredentials.mockResolvedValue({ items: [], total: 0 });
   });
 
   afterEach(() => {
@@ -226,6 +230,69 @@ describe('OAuthManagement page', () => {
         expect(text).toContain('第三方登录凭证');
         expect(text).toContain('暂无第三方登录凭证');
         expect(text).toContain('添加 LinuxDO、GitHub 或 Google 凭证后，可在添加 Session 连接时复用。');
+      });
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('renders third-party login credential summaries from site-auth api', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({
+      providers: [
+        {
+          provider: 'linuxdo',
+          label: 'LinuxDO',
+          credentialTypes: ['cookie', 'session_artifact', 'manual'],
+          captureModes: ['manual_paste', 'browser_assisted'],
+          enabled: true,
+        },
+      ],
+    });
+    apiMock.getSiteAuthCredentials.mockResolvedValue({
+      items: [
+        {
+          id: 11,
+          provider: 'linuxdo',
+          label: '主 LinuxDO',
+          subject: 'linuxdo-user-42',
+          email: 'linuxdo-user@example.com',
+          username: 'linuxdo-user',
+          credentialType: 'cookie',
+          status: 'active',
+          expiresAt: '2026-12-31T00:00:00.000Z',
+          metadata: { source: 'manual-test' },
+        },
+      ],
+      total: 1,
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        const text = collectText(root!.root);
+        expect(apiMock.getSiteAuthProviders).toHaveBeenCalledTimes(1);
+        expect(apiMock.getSiteAuthCredentials).toHaveBeenCalledTimes(1);
+        expect(text).toContain('主 LinuxDO');
+        expect(text).toContain('linuxdo-user@example.com');
+        expect(text).toContain('Cookie');
+        expect(text).toContain('有效');
       });
     } finally {
       root?.unmount();

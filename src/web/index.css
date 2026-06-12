@@ -3046,6 +3046,29 @@ textarea {
   justify-content: center;
 }
 
+.oauth-site-auth-list {
+  display: grid;
+  gap: 10px;
+}
+
+.oauth-site-auth-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 12%, var(--color-border));
+  background: color-mix(in srgb, var(--color-bg) 84%, var(--color-bg-card));
+}
+
+.oauth-site-auth-status {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+
 .oauth-workbench-head {
   display: flex;
   align-items: flex-start;
@@ -3337,6 +3360,14 @@ textarea {
   .oauth-provider-panel,
   .oauth-site-auth-card {
     min-height: auto;
+  }
+
+  .oauth-site-auth-item {
+    flex-direction: column;
+  }
+
+  .oauth-site-auth-status {
+    justify-items: start;
   }
 }
 

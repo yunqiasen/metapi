@@ -2340,28 +2340,30 @@ export default function OAuthManagement() {
               placeholder={`${resolveSiteAuthImportProviderLabel(siteAuthImportProvider)} 手动凭证`}
             />
           </div>
-          <div className="oauth-form-field">
-            <div className="oauth-field-label">浏览器辅助粘贴</div>
-            <textarea
-              className="oauth-textarea oauth-mono"
-              data-site-auth-import="capture"
-              value={siteAuthCaptureText}
-              onChange={(event) => setSiteAuthCaptureText(event.target.value)}
-              placeholder="粘贴浏览器复制的 Cookie 串或 OAuth callback URL"
-              rows={3}
-            />
-            <div className="oauth-form-note">
-              不读取浏览器里的 HttpOnly Cookie，只解析你主动粘贴的 Cookie、callback URL 或授权片段。
+          {siteAuthImportProvider === 'linuxdo' ? (
+            <div className="oauth-form-field">
+              <div className="oauth-field-label">浏览器辅助粘贴</div>
+              <textarea
+                className="oauth-textarea oauth-mono"
+                data-site-auth-import="capture"
+                value={siteAuthCaptureText}
+                onChange={(event) => setSiteAuthCaptureText(event.target.value)}
+                placeholder="粘贴浏览器复制的 Cookie 串或 OAuth callback URL"
+                rows={3}
+              />
+              <div className="oauth-form-note">
+                不读取浏览器里的 HttpOnly Cookie，只解析你主动粘贴的 Cookie、callback URL 或授权片段。
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost oauth-capture-parse-button"
+                onClick={handleParseSiteAuthCapture}
+                disabled={siteAuthCaptureParsing || !siteAuthCaptureText.trim()}
+              >
+                {siteAuthCaptureParsing ? '解析中...' : '解析并填入'}
+              </button>
             </div>
-            <button
-              type="button"
-              className="btn btn-ghost oauth-capture-parse-button"
-              onClick={handleParseSiteAuthCapture}
-              disabled={siteAuthCaptureParsing || !siteAuthCaptureText.trim()}
-            >
-              {siteAuthCaptureParsing ? '解析中...' : '解析并填入'}
-            </button>
-          </div>
+          ) : null}
           <div className="oauth-form-field">
             <div className="oauth-field-label">{resolveSiteAuthImportProviderLabel(siteAuthImportProvider)}</div>
             <textarea

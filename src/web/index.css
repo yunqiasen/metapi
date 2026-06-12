@@ -3111,6 +3111,13 @@ textarea {
   margin-bottom: 16px;
 }
 
+.oauth-site-auth-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .oauth-auth-provider-chip {
   padding: 5px 10px;
   border-radius: 999px;

@@ -90,6 +90,21 @@ export interface CreateApiTokenOptions {
   modelLimits?: string;
 }
 
+export type ExternalAuthLoginInput = {
+  sourceProvider: 'linuxdo' | 'github' | 'google';
+  credentialType: 'oauth_token' | 'cookie' | 'session_artifact' | 'manual';
+  payload: Record<string, unknown>;
+};
+
+export type ExternalAuthLoginResult = {
+  accessToken: string;
+  platformUserId?: number;
+  username?: string;
+  refreshToken?: string;
+  tokenExpiresAt?: number | string;
+  sourceProvider: 'linuxdo' | 'github' | 'google';
+};
+
 export interface PlatformAdapter {
   readonly platformName: string;
   detect(url: string): Promise<boolean>;
@@ -105,6 +120,7 @@ export interface PlatformAdapter {
   getUserGroups(baseUrl: string, accessToken: string, platformUserId?: number): Promise<string[]>;
   createApiToken(baseUrl: string, accessToken: string, platformUserId?: number, options?: CreateApiTokenOptions): Promise<boolean>;
   deleteApiToken(baseUrl: string, accessToken: string, tokenKey: string, platformUserId?: number): Promise<boolean>;
+  externalAuthLogin?(baseUrl: string, input: ExternalAuthLoginInput): Promise<ExternalAuthLoginResult>;
 }
 
 export abstract class BasePlatformAdapter implements PlatformAdapter {

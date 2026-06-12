@@ -436,6 +436,7 @@ describe('OAuthManagement page', () => {
       });
 
       await clickButton(root!, buttonLabel);
+      expect(root.root.findAll((node) => node.type === 'textarea' && node.props['data-site-auth-import'] === 'capture')).toHaveLength(0);
       const secretInput = root.root.find((node) => node.type === 'textarea' && node.props['data-site-auth-import'] === 'cookie');
       await act(async () => {
         secretInput.props.onChange({ target: { value: token } });

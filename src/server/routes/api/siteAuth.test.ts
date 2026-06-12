@@ -91,6 +91,30 @@ describe('site auth routes', () => {
     });
   });
 
+  it('reports credential decryptability without leaking payloads', async () => {
+    await vault.createSiteAuthCredential({
+      provider: 'linuxdo',
+      label: '迁移路由检查',
+      credentialType: 'cookie',
+      payload: { cookie: 'ld_auth_session=route-migration-check' },
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/site-auth/credentials/decryptability',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain('route-migration-check');
+    expect(response.body).not.toContain('ld_auth_session');
+    expect(response.json()).toEqual(expect.objectContaining({
+      total: 1,
+      decryptable: 1,
+      failed: 0,
+      items: [expect.objectContaining({ label: '迁移路由检查', ok: true })],
+    }));
+  });
+
   it('imports a manual LinuxDO credential without returning secret payloads', async () => {
     const response = await app.inject({
       method: 'POST',

@@ -7,6 +7,7 @@ import {
 import { createRateLimitGuard } from '../../middleware/requestRateLimit.js';
 import { db, schema } from '../../db/index.js';
 import {
+  checkSiteAuthCredentialDecryptability,
   createSiteAuthCredential,
   deleteSiteAuthCredential,
   listSiteAuthCredentials,
@@ -71,6 +72,10 @@ export async function siteAuthRoutes(app: FastifyInstance) {
       total: items.length,
     };
   });
+
+  app.get('/api/site-auth/credentials/decryptability', { preHandler: [limitSiteAuthCredentialRead] }, async () => (
+    checkSiteAuthCredentialDecryptability()
+  ));
 
   app.post<{ Body: unknown }>(
     '/api/site-auth/credentials/import',

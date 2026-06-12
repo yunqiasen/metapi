@@ -89,4 +89,21 @@ describe('site auth credential vault', () => {
     await expect(vault.getSiteAuthCredential(created.id)).resolves.toBeNull();
     await expect(vault.getSiteAuthCredentialPayload(created.id)).resolves.toBeNull();
   });
+
+  it('reports decryptability without returning credential payloads', async () => {
+    const created = await vault.createSiteAuthCredential({
+      provider: 'linuxdo',
+      label: '迁移检查',
+      credentialType: 'cookie',
+      payload: { cookie: 'ld_auth_session=migration-check' },
+    });
+
+    const report = await vault.checkSiteAuthCredentialDecryptability();
+
+    expect(report.total).toBeGreaterThanOrEqual(1);
+    expect(report.decryptable).toBeGreaterThanOrEqual(1);
+    expect(report.failed).toBe(0);
+    expect(JSON.stringify(report)).not.toContain('migration-check');
+    expect(report.items).toContainEqual(expect.objectContaining({ id: created.id, ok: true }));
+  });
 });

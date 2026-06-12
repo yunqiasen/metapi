@@ -24,6 +24,19 @@ const siteAuthCredentialCapturePayloadSchema = z.object({
 export type SiteAuthCredentialImportPayload = z.output<typeof siteAuthCredentialImportPayloadSchema>;
 export type SiteAuthCredentialCapturePayload = z.output<typeof siteAuthCredentialCapturePayloadSchema>;
 
+export type SiteAuthCredentialDecryptabilityResponse = {
+  total: number;
+  decryptable: number;
+  failed: number;
+  items: Array<{
+    id: number;
+    provider: string;
+    label: string;
+    ok: boolean;
+    error?: string;
+  }>;
+};
+
 function normalizeSiteAuthPayloadInput(input: unknown): unknown {
   return input === undefined ? {} : input;
 }

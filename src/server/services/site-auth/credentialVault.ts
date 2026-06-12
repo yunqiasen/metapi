@@ -30,6 +30,21 @@ export type SiteAuthCredentialSummary = {
   updatedAt?: string | null;
 };
 
+export type SiteAuthCredentialDecryptabilityItem = {
+  id: number;
+  provider: SiteAuthProviderId;
+  label: string;
+  ok: boolean;
+  error?: string;
+};
+
+export type SiteAuthCredentialDecryptabilityReport = {
+  total: number;
+  decryptable: number;
+  failed: number;
+  items: SiteAuthCredentialDecryptabilityItem[];
+};
+
 export type CreateSiteAuthCredentialInput = {
   provider: SiteAuthProviderId;
   label?: string;
@@ -219,4 +234,40 @@ export async function getSiteAuthCredentialPayload(id: number): Promise<SiteAuth
     .where(eq(schema.siteAuthCredentials.id, id))
     .get();
   return row ? decryptPayload(row.encryptedPayload) : null;
+}
+
+export async function checkSiteAuthCredentialDecryptability(): Promise<SiteAuthCredentialDecryptabilityReport> {
+  const rows = await db
+    .select()
+    .from(schema.siteAuthCredentials)
+    .orderBy(desc(schema.siteAuthCredentials.id))
+    .all();
+
+  const items = rows.map((row): SiteAuthCredentialDecryptabilityItem => {
+    try {
+      decryptPayload(row.encryptedPayload);
+      return {
+        id: row.id,
+        provider: row.provider as SiteAuthProviderId,
+        label: row.label,
+        ok: true,
+      };
+    } catch (error: any) {
+      return {
+        id: row.id,
+        provider: row.provider as SiteAuthProviderId,
+        label: row.label,
+        ok: false,
+        error: error?.message || 'credential payload decrypt failed',
+      };
+    }
+  });
+
+  const decryptable = items.filter((item) => item.ok).length;
+  return {
+    total: items.length,
+    decryptable,
+    failed: items.length - decryptable,
+    items,
+  };
 }

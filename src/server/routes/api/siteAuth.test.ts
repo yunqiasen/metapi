@@ -282,16 +282,51 @@ describe('site auth routes', () => {
     });
   });
 
-  it('rejects LinuxDO OAuth starts when no callback OAuth flow is configured', async () => {
+  it('starts LinuxDO as browser-login credential capture', async () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/site-auth/providers/linuxdo/start',
       headers: { origin: 'http://metapi.local' },
     });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.body).toContain('LinuxDO automatic OAuth is not configured');
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      provider: 'linuxdo',
+      authorizationUrl: 'https://linux.do/login',
+      instructions: {
+        callbackPath: '/api/site-auth/callback/linuxdo',
+        mode: 'browser_login',
+      },
+    });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to provider browser login when GitHub OAuth app config is missing', async () => {
+    const originalClientId = process.env.SITE_AUTH_GITHUB_CLIENT_ID;
+    const originalClientSecret = process.env.SITE_AUTH_GITHUB_CLIENT_SECRET;
+    delete process.env.SITE_AUTH_GITHUB_CLIENT_ID;
+    delete process.env.SITE_AUTH_GITHUB_CLIENT_SECRET;
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/site-auth/providers/github/start',
+        headers: { origin: 'http://metapi.local' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        provider: 'github',
+        authorizationUrl: 'https://github.com/login',
+        instructions: {
+          callbackPath: '/api/site-auth/callback/github',
+          mode: 'browser_login',
+        },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      process.env.SITE_AUTH_GITHUB_CLIENT_ID = originalClientId;
+      process.env.SITE_AUTH_GITHUB_CLIENT_SECRET = originalClientSecret;
+    }
   });
 
   it('imports a target-site session artifact without returning secret payloads', async () => {

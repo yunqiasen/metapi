@@ -100,11 +100,18 @@ function getOAuthClientConfig(provider: SiteAuthProviderId): OAuthClientConfig {
   throw new Error('LinuxDO automatic OAuth is not configured; use manual LinuxDO cookie import for now');
 }
 
+function resolveProviderBrowserLoginUrl(provider: SiteAuthProviderId): string {
+  if (provider === 'github') return 'https://github.com/login';
+  if (provider === 'google') return 'https://accounts.google.com/';
+  return 'https://linux.do/login';
+}
+
 function createStartResult(
   provider: SiteAuthProviderId,
   state: string,
   redirectUri: string,
   authorizationUrl: string,
+  mode: 'oauth' | 'browser_login' = 'oauth',
 ): SiteAuthAuthorizationStartResult {
   return {
     provider,
@@ -114,9 +121,26 @@ function createStartResult(
       redirectUri,
       callbackPath: resolveCallbackPath(provider),
       manualCallbackDelayMs: MANUAL_CALLBACK_DELAY_MS,
-      mode: 'oauth',
+      mode,
     },
   };
+}
+
+function startProviderBrowserLogin(provider: SiteAuthProviderId): SiteAuthAuthorizationStartResult {
+  const state = randomUUID();
+  sessions.set(state, {
+    provider,
+    state,
+    status: 'pending',
+    redirectUri: '',
+  });
+  return createStartResult(
+    provider,
+    state,
+    '',
+    resolveProviderBrowserLoginUrl(provider),
+    'browser_login',
+  );
 }
 
 function buildGitHubAuthorizationUrl(config: OAuthClientConfig, state: string, redirectUri: string): string {
@@ -140,7 +164,14 @@ function buildGoogleAuthorizationUrl(config: OAuthClientConfig, state: string, r
 }
 
 export function startSiteAuthAuthorization(provider: SiteAuthProviderId, origin: string): SiteAuthAuthorizationStartResult {
-  const config = getOAuthClientConfig(provider);
+  if (provider === 'linuxdo') return startProviderBrowserLogin(provider);
+
+  let config: OAuthClientConfig;
+  try {
+    config = getOAuthClientConfig(provider);
+  } catch {
+    return startProviderBrowserLogin(provider);
+  }
   const state = randomUUID();
   const redirectUri = resolveCallbackUri(provider, origin);
   const authorizationUrl = provider === 'github'

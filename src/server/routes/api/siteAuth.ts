@@ -137,7 +137,7 @@ export async function siteAuthRoutes(app: FastifyInstance) {
     },
   );
 
-  app.get<{ Params: { provider: string }; Querystring: { state?: string; code?: string; error?: string } }>(
+  app.get<{ Params: { provider: string }; Querystring: { state?: string; code?: string; payload?: string; oneTimePassword?: string; error?: string } }>(
     '/api/site-auth/callback/:provider',
     async (request, reply) => {
       const provider = normalizeSiteAuthProvider(request.params.provider);
@@ -149,6 +149,8 @@ export async function siteAuthRoutes(app: FastifyInstance) {
           provider,
           state: String(request.query.state || ''),
           code: request.query.code,
+          payload: request.query.payload,
+          oneTimePassword: request.query.oneTimePassword,
           error: request.query.error,
         });
         return reply.type('text/html').send(renderSiteAuthCallbackPage(session));

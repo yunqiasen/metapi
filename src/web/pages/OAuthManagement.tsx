@@ -1148,7 +1148,7 @@ export default function OAuthManagement() {
       value: provider.provider,
       label: provider.label,
       description: provider.provider === 'linuxdo'
-        ? '浏览器登录弹窗 · Cookie 兜底保存'
+        ? 'LinuxDO 授权回调后自动保存 Cookie'
         : 'OAuth 浏览器授权后保存凭证',
     })),
     [siteAuthProviders],
@@ -1459,7 +1459,7 @@ export default function OAuthManagement() {
     try {
       const started = await api.startSiteAuthProviderAuthorization(provider.provider);
       setSessionInfo(provider.provider === 'linuxdo'
-        ? '已打开 LinuxDO 登录弹窗。完成登录后，如无法自动保存，请使用右侧兜底导入。'
+        ? '等待 LinuxDO 登录授权回调并保存凭证'
         : '等待第三方登录授权完成');
       setActiveSiteAuthSession({
         provider: started.provider,

@@ -49,6 +49,12 @@ import { parseBatchApiKeys } from "../../shared/apiKeyBatch.js";
 
 type ConnectionsSegment = "session" | "apikey" | "tokens";
 
+type CheckinTaskFeedback = {
+  jobId?: string;
+  status?: string;
+  message: string;
+};
+
 const ACCOUNT_SEGMENTS: Array<{
   value: ConnectionsSegment;
   label: string;
@@ -158,6 +164,8 @@ export default function Accounts() {
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>(
     {},
   );
+  const [checkinTaskFeedback, setCheckinTaskFeedback] =
+    useState<CheckinTaskFeedback | null>(null);
   const [embeddedTokenActions, setEmbeddedTokenActions] =
     useState<React.ReactNode>(null);
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
@@ -691,6 +699,34 @@ export default function Accounts() {
     } finally {
       setActionLoading((s) => ({ ...s, [key]: false }));
       void load(true);
+    }
+  };
+
+  const handleTriggerCheckinAll = async () => {
+    const key = "checkin-all";
+    setActionLoading((s) => ({ ...s, [key]: true }));
+    try {
+      const result = await api.triggerCheckinAll();
+      if (result?.queued) {
+        const message = result.message || "已开始全部签到，请稍后查看签到日志";
+        setCheckinTaskFeedback({
+          jobId: result.jobId,
+          status: result.status,
+          message,
+        });
+        toast.info(message);
+      } else {
+        const message = result?.message || "签到已执行";
+        setCheckinTaskFeedback({ message, status: "succeeded" });
+        toast.success(message);
+      }
+      await load(true);
+    } catch (e: any) {
+      const message = e.message || "全部签到触发失败";
+      setCheckinTaskFeedback({ message, status: "failed" });
+      toast.error(message);
+    } finally {
+      setActionLoading((s) => ({ ...s, [key]: false }));
     }
   };
 
@@ -1429,13 +1465,7 @@ export default function Accounts() {
                 </div>
                 {activeSegment === "session" && (
                   <button
-                    onClick={() =>
-                      withLoading(
-                        "checkin-all",
-                        () => api.triggerCheckinAll(),
-                        "已触发全部签到",
-                      )
-                    }
+                    onClick={handleTriggerCheckinAll}
                     disabled={actionLoading["checkin-all"]}
                     className="btn btn-soft-primary"
                   >
@@ -1486,6 +1516,39 @@ export default function Accounts() {
         {activeSegment === "tokens" && embeddedTokenActions}
       </div>
 
+      {activeSegment === "session" && checkinTaskFeedback ? (
+        <div
+          className="card accounts-checkin-task-banner"
+          style={{
+            marginBottom: 12,
+            padding: "12px 16px",
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 12,
+            alignItems: "center",
+            borderColor: checkinTaskFeedback.status === "failed" ? "var(--color-error)" : "var(--color-primary)",
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 700, color: "var(--color-text-primary)" }}>
+              {checkinTaskFeedback.status === "failed" ? "签到任务触发失败" : "签到任务已提交"}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 4 }}>
+              {checkinTaskFeedback.message}
+              {checkinTaskFeedback.jobId ? ` · 任务 ID：${checkinTaskFeedback.jobId}` : ""}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => navigate("/checkin")}
+            style={{ border: "1px solid var(--color-border)", whiteSpace: "nowrap" }}
+          >
+            查看签到记录
+          </button>
+        </div>
+      ) : null}
+
       <ResponsiveFilterPanel
         isMobile={isMobile}
         mobileOpen={showMobileTools}
@@ -1512,11 +1575,7 @@ export default function Accounts() {
               <button
                 onClick={async () => {
                   setShowMobileTools(false);
-                  await withLoading(
-                    "checkin-all",
-                    () => api.triggerCheckinAll(),
-                    "已触发全部签到",
-                  );
+                  await handleTriggerCheckinAll();
                 }}
                 disabled={actionLoading["checkin-all"]}
                 className="btn btn-ghost"

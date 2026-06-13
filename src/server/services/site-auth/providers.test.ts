@@ -18,7 +18,7 @@ describe('site auth provider registry', () => {
         provider: 'linuxdo',
         label: 'LinuxDO',
         credentialTypes: ['cookie', 'session_artifact', 'manual'],
-        captureModes: ['manual_paste', 'browser_assisted'],
+        captureModes: ['oauth_callback', 'manual_paste', 'browser_assisted'],
       },
     });
   });

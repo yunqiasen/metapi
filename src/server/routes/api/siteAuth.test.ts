@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import { constants, publicEncrypt } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -145,6 +146,75 @@ describe('site auth routes', () => {
 
     const payload = await vault.getSiteAuthCredentialPayload(sessionResponse.json().credential.id);
     expect(payload).toMatchObject({ accessToken: 'gho-secret-token' });
+  });
+
+  it('starts LinuxDO user-api-key authorization and saves the OTP session cookie on callback', async () => {
+    const startResponse = await app.inject({
+      method: 'POST',
+      url: '/api/site-auth/providers/linuxdo/start',
+      headers: { origin: 'http://metapi.local' },
+    });
+
+    expect(startResponse.statusCode).toBe(200);
+    const startBody = startResponse.json();
+    const authorizationUrl = new URL(startBody.authorizationUrl);
+    expect(authorizationUrl.origin).toBe('https://linux.do');
+    expect(authorizationUrl.pathname).toBe('/user-api-key/new');
+    expect(authorizationUrl.searchParams.get('auth_redirect')).toBe('http://metapi.local/api/site-auth/callback/linuxdo');
+    expect(authorizationUrl.searchParams.get('scopes')).toContain('one_time_password');
+    expect(authorizationUrl.searchParams.get('padding')).toBe('oaep');
+    expect(startBody.instructions).toMatchObject({
+      redirectUri: 'http://metapi.local/api/site-auth/callback/linuxdo',
+      mode: 'oauth',
+    });
+
+    const publicKey = authorizationUrl.searchParams.get('public_key') || '';
+    const nonce = authorizationUrl.searchParams.get('nonce') || '';
+    const payload = publicEncrypt(
+      { key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING },
+      Buffer.from(JSON.stringify({ key: 'linuxdo-user-api-key', nonce, api: 4, username: 'linuxdo-user' })),
+    ).toString('base64');
+    const oneTimePassword = publicEncrypt(
+      { key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING },
+      Buffer.from('linuxdo-otp-1'),
+    ).toString('base64');
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: {
+        getSetCookie: () => ['ld_auth_session=auto-session; Path=/; HttpOnly; Secure', '_t=csrf-token; Path=/; Secure'],
+      },
+    });
+
+    const callbackResponse = await app.inject({
+      method: 'GET',
+      url: `/api/site-auth/callback/linuxdo?state=${encodeURIComponent(startBody.state)}&payload=${encodeURIComponent(payload)}&oneTimePassword=${encodeURIComponent(oneTimePassword)}`,
+    });
+
+    expect(callbackResponse.statusCode).toBe(200);
+    expect(callbackResponse.body).toContain('授权已保存');
+    expect(callbackResponse.body).not.toContain('auto-session');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://linux.do/session/otp/linuxdo-otp-1',
+      expect.objectContaining({ redirect: 'manual' }),
+    );
+
+    const sessionResponse = await app.inject({
+      method: 'GET',
+      url: `/api/site-auth/sessions/${encodeURIComponent(startBody.state)}`,
+    });
+    expect(sessionResponse.statusCode).toBe(200);
+    expect(sessionResponse.body).not.toContain('auto-session');
+    expect(sessionResponse.json()).toMatchObject({
+      provider: 'linuxdo',
+      state: startBody.state,
+      status: 'success',
+      credential: expect.objectContaining({ provider: 'linuxdo', credentialType: 'cookie' }),
+    });
+
+    const savedPayload = await vault.getSiteAuthCredentialPayload(sessionResponse.json().credential.id);
+    expect(savedPayload).toMatchObject({ cookie: expect.stringContaining('ld_auth_session=auto-session') });
   });
 
   it('reports credential decryptability without leaking payloads', async () => {

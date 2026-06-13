@@ -12,6 +12,7 @@ const { apiMock } = vi.hoisted(() => ({
     getSites: vi.fn(),
     batchUpdateAccounts: vi.fn(),
     refreshAccountHealth: vi.fn(),
+    triggerCheckinAll: vi.fn(),
   },
 }));
 
@@ -24,6 +25,13 @@ async function flushMicrotasks() {
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+function collectText(node: any): string {
+  return (node.children || []).map((child: any) => {
+    if (typeof child === 'string') return child;
+    return collectText(child);
+  }).join('');
 }
 
 describe('Accounts batch actions', () => {
@@ -57,6 +65,13 @@ describe('Accounts batch actions', () => {
       failedItems: [],
     });
     apiMock.refreshAccountHealth.mockResolvedValue({ success: true });
+    apiMock.triggerCheckinAll.mockResolvedValue({
+      success: true,
+      queued: true,
+      jobId: 'checkin-task-1',
+      status: 'pending',
+      message: '已开始全部签到，请稍后查看签到日志',
+    });
   });
 
   afterEach(() => {
@@ -121,6 +136,39 @@ describe('Accounts batch actions', () => {
 
       const checkbox = root.root.find((node) => node.props['data-testid'] === 'account-select-1');
       expect(checkbox.props.checked).toBe(true);
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('shows a visible background task status after triggering all checkins', async () => {
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <MemoryRouter initialEntries={['/accounts']}>
+            <ToastProvider>
+              <Accounts />
+            </ToastProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushMicrotasks();
+
+      const checkinButton = root.root.find((node) => (
+        node.type === 'button'
+        && typeof node.props.onClick === 'function'
+        && collectText(node).includes('全部签到')
+      ));
+      await act(async () => {
+        await checkinButton.props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(apiMock.triggerCheckinAll).toHaveBeenCalledTimes(1);
+      const text = collectText(root.root);
+      expect(text).toContain('签到任务已提交');
+      expect(text).toContain('checkin-task-1');
     } finally {
       root?.unmount();
     }

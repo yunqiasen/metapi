@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import CenteredModal from '../components/CenteredModal.js';
 import ResponsiveFilterPanel from '../components/ResponsiveFilterPanel.js';
 import { MobileCard, MobileField } from '../components/MobileCard.js';
@@ -20,6 +20,10 @@ import { useIsMobile } from '../components/useIsMobile.js';
 import OAuthModelsModal, { type OAuthModelItem } from './oauth/OAuthModelsModal.js';
 import ProviderConnectionPanel from './oauth/ProviderConnectionPanel.js';
 import SiteAuthCredentialPanel from './oauth/SiteAuthCredentialPanel.js';
+import {
+  browserSessionCredentialCaptureScript,
+  parseBrowserSessionCredentialCapture,
+} from './helpers/browserSessionCredential.js';
 import {
   api,
   type OAuthConnectionInfo,
@@ -65,6 +69,13 @@ function resolveSiteAuthImportSecretPlaceholder(provider: SiteAuthImportProvider
   if (provider === 'github') return '粘贴目标中转站返回的 GitHub 登录 Session';
   if (provider === 'google') return '粘贴目标中转站返回的 Google 登录 Session';
   return '粘贴 ld_auth_session=...';
+}
+
+function resolveSiteAuthProviderLabel(provider: string): string {
+  if (provider === 'github') return 'GitHub';
+  if (provider === 'google') return 'Google';
+  if (provider === 'linuxdo') return 'LinuxDO';
+  return provider;
 }
 
 type ActiveSession = {
@@ -658,16 +669,17 @@ function SideDrawer({
 
 export default function OAuthManagement() {
   const location = useLocation();
-  const navigate = useNavigate();
   const isMobile = useIsMobile();
   const toast = useToast();
   const createIntentHandledRef = useRef(false);
   const modelsModalRequestSeqRef = useRef(0);
   const [providers, setProviders] = useState<OAuthProviderInfo[]>([]);
   const [connections, setConnections] = useState<OAuthConnectionInfo[]>([]);
+  const [sites, setSites] = useState<any[]>([]);
   const [siteAuthProviders, setSiteAuthProviders] = useState<SiteAuthProviderInfo[]>([]);
   const [createConnectionMode, setCreateConnectionMode] = useState<CreateConnectionMode>('oauth');
   const [selectedSiteAuthProviderKey, setSelectedSiteAuthProviderKey] = useState<SiteAuthImportProvider>('linuxdo');
+  const [selectedSiteAuthTargetSiteId, setSelectedSiteAuthTargetSiteId] = useState('');
   const [siteAuthCredentials, setSiteAuthCredentials] = useState<SiteAuthCredentialInfo[]>([]);
   const [siteAuthCredentialDecryptability, setSiteAuthCredentialDecryptability] =
     useState<SiteAuthCredentialDecryptabilityResponse | null>(null);
@@ -682,6 +694,17 @@ export default function OAuthManagement() {
   const [siteAuthImportCookie, setSiteAuthImportCookie] = useState('');
   const [siteAuthImporting, setSiteAuthImporting] = useState(false);
   const [siteAuthCaptureParsing, setSiteAuthCaptureParsing] = useState(false);
+  const [siteAuthBrowserCaptureOpen, setSiteAuthBrowserCaptureOpen] = useState(false);
+  const [siteAuthBrowserCaptureText, setSiteAuthBrowserCaptureText] = useState('');
+  const [siteAuthBrowserCaptureError, setSiteAuthBrowserCaptureError] = useState('');
+  const [siteAuthBrowserCaptureSaving, setSiteAuthBrowserCaptureSaving] = useState(false);
+  const [siteAuthBrowserCaptureContext, setSiteAuthBrowserCaptureContext] = useState<null | {
+    provider: string;
+    providerLabel: string;
+    siteId: number;
+    siteName?: string;
+    siteUrl?: string;
+  }>(null);
   const [verifyingSiteAuthCredentialId, setVerifyingSiteAuthCredentialId] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [sessionFeedback, setSessionFeedback] = useState<SessionFeedback | null>(null);
@@ -835,9 +858,10 @@ export default function OAuthManagement() {
 
   const load = useCallback(async () => {
     try {
-      const [providersResponse, siteAuthProvidersResponse] = await Promise.all([
+      const [providersResponse, siteAuthProvidersResponse, sitesResponse] = await Promise.all([
         api.getOAuthProviders(),
         api.getSiteAuthProviders(),
+        api.getSites(),
         loadSiteAuthCredentials(),
         loadConnections(),
       ]);
@@ -845,10 +869,16 @@ export default function OAuthManagement() {
       const nextSiteAuthProviders = Array.isArray(siteAuthProvidersResponse?.providers)
         ? siteAuthProvidersResponse.providers
         : [];
+      const nextSites = Array.isArray(sitesResponse) ? sitesResponse : [];
       setRuntimeSystemProxyConfigured(providersResponse?.defaults?.systemProxyConfigured === true);
       setProviders(nextProviders);
+      setSites(nextSites);
       setSiteAuthProviders(nextSiteAuthProviders);
       setSelectedProviderKey((current) => current || nextProviders[0]?.provider || '');
+      setSelectedSiteAuthTargetSiteId((current) => {
+        if (current && nextSites.some((site: any) => String(site?.id || '') === current)) return current;
+        return nextSites[0]?.id ? String(nextSites[0].id) : '';
+      });
     } catch (error: any) {
       console.error('failed to load oauth management data', error);
       setSessionError(error?.message || 'OAuth 管理数据加载失败');
@@ -1019,7 +1049,7 @@ export default function OAuthManagement() {
       setDrawerProjectId('');
       resetOauthProxySettings();
       setDrawerOpen(true);
-      setSessionInfo('从连接页跳转到 OAuth 管理。第三方登录态要回连接管理选择目标中转站后保存。');
+      setSessionInfo('请选择目标中转站，打开该站登录窗口，登录完成后在这里保存持久凭证。');
       return;
     }
 
@@ -1178,6 +1208,20 @@ export default function OAuthManagement() {
     });
     return Array.from(seen.entries()).map(([value, label]) => ({ value, label }));
   }, [connections]);
+
+  const siteAuthTargetSiteOptions = useMemo(() => (
+    sites
+      .filter((site) => Number.isInteger(Number(site?.id)) && Number(site?.id) > 0)
+      .map((site) => ({
+        value: String(site.id),
+        label: asTrimmedString(site.name) || asTrimmedString(site.url) || `站点 #${site.id}`,
+        description: [site.platform, site.url].filter((value) => typeof value === 'string' && value.trim()).join(' · '),
+      }))
+  ), [sites]);
+
+  const selectedSiteAuthTargetSite = useMemo(() => (
+    sites.find((site) => String(site?.id || '') === selectedSiteAuthTargetSiteId) || null
+  ), [selectedSiteAuthTargetSiteId, sites]);
 
   const filteredConnections = useMemo(() => {
     const search = searchQuery.trim().toLowerCase();
@@ -1450,11 +1494,89 @@ export default function OAuthManagement() {
     }
   };
 
+  const closeSiteAuthBrowserCapture = () => {
+    if (siteAuthBrowserCaptureSaving) return;
+    setSiteAuthBrowserCaptureOpen(false);
+    setSiteAuthBrowserCaptureText('');
+    setSiteAuthBrowserCaptureError('');
+    setSiteAuthBrowserCaptureContext(null);
+  };
+
+  const handleSaveSiteAuthBrowserCapture = async () => {
+    const context = siteAuthBrowserCaptureContext;
+    if (!context) return;
+    try {
+      const parsed = parseBrowserSessionCredentialCapture(siteAuthBrowserCaptureText);
+      setSiteAuthBrowserCaptureSaving(true);
+      setSiteAuthBrowserCaptureError('');
+      const credentialLabel = parsed.username
+        ? `${context.providerLabel} · ${parsed.username}`
+        : `${context.providerLabel} · ${context.siteName || context.siteUrl || '目标站 Session'}`;
+      await api.importSiteAuthCredential({
+        provider: context.provider,
+        label: credentialLabel,
+        credentialType: 'session_artifact',
+        payload: {
+          accessToken: parsed.accessToken,
+          ...(parsed.platformUserId ? { platformUserId: parsed.platformUserId } : {}),
+          ...(parsed.username ? { username: parsed.username } : {}),
+        },
+        metadata: {
+          source: 'target-site-browser-login',
+          targetSiteId: context.siteId,
+          ...(context.siteName ? { targetSiteName: context.siteName } : {}),
+          ...(context.siteUrl ? { targetSiteUrl: context.siteUrl } : {}),
+        },
+      });
+      await loadSiteAuthCredentials();
+      setSiteAuthBrowserCaptureOpen(false);
+      setSiteAuthBrowserCaptureText('');
+      setSiteAuthBrowserCaptureContext(null);
+      setSessionSuccess(`${credentialLabel} 已保存，可用于目标站 Session 登录`);
+      toast.success('目标站登录凭证已保存');
+    } catch (error: any) {
+      setSiteAuthBrowserCaptureError(error?.message || '浏览器凭证解析失败');
+    } finally {
+      setSiteAuthBrowserCaptureSaving(false);
+    }
+  };
+
   const handleStartSiteAuthAuthorization = async () => {
     const provider = selectedSiteAuthProvider;
     if (!provider) return;
-    setSessionInfo(provider.label + ' 要先选择目标中转站，再保存该站登录态。已打开连接管理。');
-    navigate('/accounts?segment=session&create=1');
+    const siteId = Number.parseInt(selectedSiteAuthTargetSiteId, 10);
+    if (!Number.isInteger(siteId) || siteId <= 0) {
+      setSessionError('请先选择目标中转站');
+      return;
+    }
+    const providerLabel = resolveSiteAuthProviderLabel(provider.provider) || provider.label;
+    const actionKey = `site-auth-browser-start:${provider.provider}`;
+    setActionLoadingKey(actionKey);
+    try {
+      const started = await api.startAccountSiteAuthBrowserLogin({
+        siteId,
+        provider: provider.provider,
+      });
+      const siteName = asTrimmedString(selectedSiteAuthTargetSite?.name);
+      const siteUrl = asTrimmedString(started?.targetSiteUrl)
+        || asTrimmedString(selectedSiteAuthTargetSite?.url);
+      openOAuthPopup(`site-auth-target-${provider.provider}`, started.authorizationUrl);
+      setSiteAuthBrowserCaptureContext({
+        provider: provider.provider,
+        providerLabel,
+        siteId,
+        ...(siteName ? { siteName } : {}),
+        ...(siteUrl ? { siteUrl } : {}),
+      });
+      setSiteAuthBrowserCaptureText('');
+      setSiteAuthBrowserCaptureError('');
+      setSiteAuthBrowserCaptureOpen(true);
+      setSessionInfo(`已打开 ${siteName || siteUrl || '目标中转站'} 登录窗口。登录完成后在这里保存 ${providerLabel} 目标站 Session。`);
+    } catch (error: any) {
+      setSessionError(error?.message || '无法打开目标站登录窗口');
+    } finally {
+      setActionLoadingKey('');
+    }
   };
 
   const handleSubmitManualCallback = async () => {
@@ -2522,6 +2644,62 @@ export default function OAuthManagement() {
         </div>
       </CenteredModal>
 
+      <CenteredModal
+        open={siteAuthBrowserCaptureOpen}
+        onClose={closeSiteAuthBrowserCapture}
+        title={`保存 ${siteAuthBrowserCaptureContext?.providerLabel || ''} 目标站登录态`.trim()}
+        maxWidth={680}
+        footer={(
+          <>
+            <button type="button" className="btn btn-ghost" onClick={closeSiteAuthBrowserCapture} disabled={siteAuthBrowserCaptureSaving}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleSaveSiteAuthBrowserCapture}
+              disabled={siteAuthBrowserCaptureSaving || !siteAuthBrowserCaptureText.trim()}
+            >
+              {siteAuthBrowserCaptureSaving ? '保存中...' : '保存持久凭证'}
+            </button>
+          </>
+        )}
+      >
+        <div className="oauth-drawer-section">
+          <div className="oauth-form-note">
+            登录目标中转站后，在目标站页面控制台执行下面脚本，把复制出的结果粘贴到这里。保存后会进入第三方登录凭证列表，可复用。
+          </div>
+          <div className="oauth-form-field">
+            <div className="oauth-field-label">浏览器捕获脚本</div>
+            <textarea
+              className="oauth-textarea oauth-mono"
+              readOnly
+              value={browserSessionCredentialCaptureScript}
+              rows={7}
+            />
+          </div>
+          <div className="oauth-form-field">
+            <div className="oauth-field-label">粘贴浏览器脚本输出</div>
+            <textarea
+              className="oauth-textarea oauth-mono"
+              data-site-auth-browser-capture="text"
+              value={siteAuthBrowserCaptureText}
+              onChange={(event) => {
+                setSiteAuthBrowserCaptureText(event.target.value);
+                setSiteAuthBrowserCaptureError('');
+              }}
+              placeholder="粘贴浏览器脚本输出的 JSON、Cookie 或 Session 字符串"
+              rows={5}
+            />
+            {siteAuthBrowserCaptureError ? (
+              <div className="oauth-form-note oauth-form-note-error">
+                {siteAuthBrowserCaptureError}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </CenteredModal>
+
       <SideDrawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
@@ -2553,15 +2731,30 @@ export default function OAuthManagement() {
                     </button>
                   </div>
                   {createConnectionMode === 'site-auth' ? (
-                    <div className="oauth-form-field">
-                      <div className="oauth-field-label">第三方登录 Provider</div>
-                      <ModernSelect
-                        value={selectedSiteAuthProviderKey}
-                        onChange={(value) => setSelectedSiteAuthProviderKey(normalizeSiteAuthImportProvider(String(value || '')))}
-                        options={siteAuthProviderOptions}
-                        placeholder="选择 LinuxDO / GitHub / Google"
-                      />
-                    </div>
+                    <>
+                      <div className="oauth-form-field">
+                        <div className="oauth-field-label">第三方登录 Provider</div>
+                        <ModernSelect
+                          value={selectedSiteAuthProviderKey}
+                          onChange={(value) => setSelectedSiteAuthProviderKey(normalizeSiteAuthImportProvider(String(value || '')))}
+                          options={siteAuthProviderOptions}
+                          placeholder="选择 LinuxDO / GitHub / Google"
+                        />
+                      </div>
+                      <div className="oauth-form-field">
+                        <div className="oauth-field-label">目标中转站</div>
+                        <ModernSelect
+                          data-testid="site-auth-target-site-select"
+                          value={selectedSiteAuthTargetSiteId}
+                          onChange={(value) => setSelectedSiteAuthTargetSiteId(String(value || ''))}
+                          options={siteAuthTargetSiteOptions}
+                          placeholder="选择要登录的目标中转站"
+                          emptyLabel="暂无目标中转站"
+                          searchable
+                          searchPlaceholder="搜索站点名称或 URL"
+                        />
+                      </div>
+                    </>
                   ) : (
                     <div className="oauth-form-field">
                       <div className="oauth-field-label">Provider</div>
@@ -2606,17 +2799,17 @@ export default function OAuthManagement() {
               {drawerIntent.mode === 'create' && createConnectionMode === 'site-auth' ? (
                 <>
                   <div className="oauth-form-note">
-                    这里不再保存 GitHub / Google / LinuxDO 官方站 token。先到连接管理选择目标中转站，打开该站自己的登录小窗，完成后保存目标站登录态。
+                    这里不保存 GitHub / Google / LinuxDO 官方站 token。选择目标中转站后，直接打开该站自己的登录小窗，完成后在这里保存目标站登录态。
                   </div>
                   <button
                     type="button"
                     className="btn btn-primary"
                     onClick={handleStartSiteAuthAuthorization}
-                    disabled={!selectedSiteAuthProvider || actionLoadingKey.startsWith('site-auth-start:')}
+                    disabled={!selectedSiteAuthProvider || !selectedSiteAuthTargetSiteId || actionLoadingKey.startsWith('site-auth-browser-start:')}
                   >
-                    {actionLoadingKey.startsWith('site-auth-start:')
+                    {actionLoadingKey.startsWith('site-auth-browser-start:')
                       ? '启动中...'
-                      : `去连接管理保存 ${selectedSiteAuthProvider?.label || ''} 登录态`.trim()}
+                      : `打开 ${selectedSiteAuthProvider?.label || ''} 登录并保存凭证`.trim()}
                   </button>
                 </>
               ) : (

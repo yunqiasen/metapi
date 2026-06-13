@@ -55,6 +55,35 @@ type CheckinTaskFeedback = {
   message: string;
 };
 
+const CHECKIN_TASK_POLL_INTERVAL_MS = 1500;
+const CHECKIN_TASK_POLL_MAX_ATTEMPTS = 40;
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function resolveBackgroundTask(payload: any) {
+  return payload?.task || payload;
+}
+
+function isTerminalBackgroundTask(status: unknown) {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+function resolveCheckinTaskMessage(task: any): string {
+  const message = typeof task?.message === "string" ? task.message.trim() : "";
+  if (message) return message;
+  const summary = task?.result?.summary;
+  if (summary && typeof summary === "object") {
+    return `全部账号签到完成：成功 ${summary.success || 0}，跳过 ${summary.skipped || 0}，失败 ${summary.failed || 0}`;
+  }
+  if (task?.status === "failed") return task?.error || "全部账号签到失败";
+  if (task?.status === "cancelled") return "全部账号签到已取消";
+  return "全部账号签到已完成";
+}
+
 const ACCOUNT_SEGMENTS: Array<{
   value: ConnectionsSegment;
   label: string;
@@ -788,6 +817,55 @@ export default function Accounts() {
     }
   };
 
+  const pollCheckinTask = async (jobId: string) => {
+    const normalizedJobId = jobId.trim();
+    if (!normalizedJobId) return;
+
+    for (let attempt = 0; attempt < CHECKIN_TASK_POLL_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const task = resolveBackgroundTask(await api.getTask(normalizedJobId));
+        if (isTerminalBackgroundTask(task?.status)) {
+          const message = resolveCheckinTaskMessage(task);
+          setCheckinTaskFeedback({
+            jobId: normalizedJobId,
+            status: task.status,
+            message,
+          });
+          if (task.status === "succeeded") {
+            toast.success(message);
+          } else {
+            toast.error(message);
+          }
+          await load(true);
+          return;
+        }
+      } catch (error: any) {
+        setCheckinTaskFeedback((current) => (
+          current?.jobId === normalizedJobId
+            ? {
+              ...current,
+              status: "poll_failed",
+              message: error?.message || "签到任务状态刷新失败，请查看签到记录",
+            }
+            : current
+        ));
+        return;
+      }
+
+      await wait(CHECKIN_TASK_POLL_INTERVAL_MS);
+    }
+
+    setCheckinTaskFeedback((current) => (
+      current?.jobId === normalizedJobId
+        ? {
+          ...current,
+          status: "running",
+          message: "签到任务仍在执行，请稍后查看签到记录",
+        }
+        : current
+    ));
+  };
+
   const handleTriggerCheckinAll = async () => {
     const key = "checkin-all";
     setActionLoading((s) => ({ ...s, [key]: true }));
@@ -801,6 +879,9 @@ export default function Accounts() {
           message,
         });
         toast.info(message);
+        if (typeof result.jobId === "string" && result.jobId.trim()) {
+          void pollCheckinTask(result.jobId);
+        }
       } else {
         const message = result?.message || "签到已执行";
         setCheckinTaskFeedback({ message, status: "succeeded" });
@@ -1617,7 +1698,11 @@ export default function Accounts() {
         >
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 700, color: "var(--color-text-primary)" }}>
-              {checkinTaskFeedback.status === "failed" ? "签到任务触发失败" : "签到任务已提交"}
+              {checkinTaskFeedback.status === "failed" || checkinTaskFeedback.status === "cancelled" || checkinTaskFeedback.status === "poll_failed"
+                ? "签到任务触发失败"
+                : checkinTaskFeedback.status === "succeeded"
+                  ? "签到任务已完成"
+                  : "签到任务已提交"}
             </div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 4 }}>
               {checkinTaskFeedback.message}

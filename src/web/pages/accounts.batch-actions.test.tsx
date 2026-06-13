@@ -13,6 +13,7 @@ const { apiMock } = vi.hoisted(() => ({
     batchUpdateAccounts: vi.fn(),
     refreshAccountHealth: vi.fn(),
     triggerCheckinAll: vi.fn(),
+    getTask: vi.fn(),
   },
 }));
 
@@ -71,6 +72,14 @@ describe('Accounts batch actions', () => {
       jobId: 'checkin-task-1',
       status: 'pending',
       message: '已开始全部签到，请稍后查看签到日志',
+    });
+    apiMock.getTask.mockResolvedValue({
+      success: true,
+      task: {
+        id: 'checkin-task-1',
+        status: 'pending',
+        message: '全部账号签到已开始执行',
+      },
     });
   });
 
@@ -169,6 +178,51 @@ describe('Accounts batch actions', () => {
       const text = collectText(root.root);
       expect(text).toContain('签到任务已提交');
       expect(text).toContain('checkin-task-1');
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('updates the visible checkin status when the background task finishes', async () => {
+    apiMock.getTask.mockResolvedValueOnce({
+      success: true,
+      task: {
+        id: 'checkin-task-1',
+        status: 'succeeded',
+        message: '全部账号签到完成：成功 2，跳过 0，失败 0',
+        result: {
+          summary: { total: 2, success: 2, skipped: 0, failed: 0 },
+        },
+      },
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <MemoryRouter initialEntries={['/accounts']}>
+            <ToastProvider>
+              <Accounts />
+            </ToastProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushMicrotasks();
+
+      const checkinButton = root.root.find((node) => (
+        node.type === 'button'
+        && typeof node.props.onClick === 'function'
+        && collectText(node).includes('全部签到')
+      ));
+      await act(async () => {
+        await checkinButton.props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(apiMock.getTask).toHaveBeenCalledWith('checkin-task-1');
+      const text = collectText(root.root);
+      expect(text).toContain('签到任务已完成');
+      expect(text).toContain('全部账号签到完成：成功 2，跳过 0，失败 0');
     } finally {
       root?.unmount();
     }

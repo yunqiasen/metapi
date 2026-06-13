@@ -659,6 +659,26 @@ describe('NewApiAdapter', () => {
     });
   });
 
+  it('uses saved target-site session artifacts as reusable login credentials', async () => {
+    const adapter = new NewApiAdapter();
+    const result = await adapter.externalAuthLogin?.(baseUrl, {
+      sourceProvider: 'github',
+      credentialType: 'session_artifact',
+      payload: {
+        accessToken: COOKIE_SESSION_TOKEN,
+        platformUserId: 1357,
+        username: 'saved-github-user',
+      },
+    });
+
+    expect(result).toEqual({
+      sourceProvider: 'github',
+      accessToken: COOKIE_SESSION_TOKEN,
+      platformUserId: 1357,
+      username: 'saved-github-user',
+    });
+  });
+
   it('detects cookie session values as session cookies for anyrouter-like deployments', async () => {
     const adapter = new NewApiAdapter();
     const result = await adapter.verifyToken(baseUrl, COOKIE_SESSION_TOKEN);

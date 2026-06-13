@@ -10,12 +10,10 @@ describe('parseSiteAuthCaptureText', () => {
     });
   });
 
-  it('extracts provider oauth callback code and state', () => {
-    expect(parseSiteAuthCaptureText('https://metapi.local/callback?provider=github&code=code-1&state=state-1')).toMatchObject({
-      provider: 'github',
-      credentialType: 'oauth_token',
-      payload: { code: 'code-1', state: 'state-1' },
-    });
+  it('rejects provider oauth callback urls because target-site sessions are imported separately', () => {
+    expect(() => parseSiteAuthCaptureText('https://metapi.local/callback?provider=github&code=code-1&state=state-1', 'github')).toThrow(
+      'no supported site auth credential found',
+    );
   });
 
   it('rejects unsupported pasted text', () => {

@@ -23,7 +23,7 @@ type SiteAuthCredentialPanelProps = {
 function resolveCredentialTypeLabel(value: string): string {
   if (value === 'cookie') return 'Cookie';
   if (value === 'oauth_token') return 'OAuth Token';
-  if (value === 'session_artifact') return 'Session Artifact';
+  if (value === 'session_artifact') return '目标站 Session';
   return 'Manual';
 }
 
@@ -66,7 +66,7 @@ export default function SiteAuthCredentialPanel({
         <div>
           <div className="oauth-workbench-title">第三方登录凭证</div>
           <div className="oauth-workbench-meta">
-            保存可复用的站点登录凭证。GitHub / Google 登录目标站请在添加 Session 连接里完成。
+            保存目标中转站登录态。GitHub / Google / LinuxDO 只作为目标站登录方式，不保存官方站 token。
           </div>
         </div>
         <div className="oauth-site-auth-import-actions">
@@ -116,7 +116,7 @@ export default function SiteAuthCredentialPanel({
           </svg>
           <div className="empty-state-title">暂无第三方登录凭证</div>
           <div className="empty-state-desc">
-            添加 LinuxDO 凭证或浏览器捕获的目标站 Session 后，可在添加 Session 连接时复用。
+            在连接管理选择目标中转站并完成浏览器登录后，会保存成可复用的目标站 Session。
           </div>
         </div>
       ) : (

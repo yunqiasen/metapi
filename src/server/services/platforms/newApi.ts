@@ -1012,8 +1012,32 @@ export class NewApiAdapter extends BasePlatformAdapter {
     baseUrl: string,
     input: ExternalAuthLoginInput,
   ): Promise<ExternalAuthLoginResult> {
+    if (input.credentialType === 'session_artifact') {
+      const accessToken = typeof input.payload?.accessToken === 'string'
+        ? input.payload.accessToken.trim()
+        : (typeof input.payload?.cookie === 'string' ? input.payload.cookie.trim() : '');
+      if (!accessToken) {
+        throw new Error('target-site session artifact is missing access token');
+      }
+      const rawPlatformUserId = input.payload?.platformUserId;
+      const platformUserId = typeof rawPlatformUserId === 'number'
+        ? rawPlatformUserId
+        : (typeof rawPlatformUserId === 'string' && rawPlatformUserId.trim()
+          ? Number.parseInt(rawPlatformUserId.trim(), 10)
+          : undefined);
+      const username = typeof input.payload?.username === 'string'
+        ? input.payload.username.trim()
+        : undefined;
+      return {
+        accessToken,
+        ...(Number.isInteger(platformUserId) && platformUserId! > 0 ? { platformUserId } : {}),
+        ...(username ? { username } : {}),
+        sourceProvider: input.sourceProvider,
+      };
+    }
+
     if (input.sourceProvider !== 'linuxdo' || input.credentialType !== 'cookie') {
-      throw new Error('new-api site auth login only supports LinuxDO cookie credentials');
+      throw new Error('new-api site auth login supports LinuxDO cookie or saved target-site session artifacts');
     }
 
     const cookie = typeof input.payload?.cookie === 'string' ? input.payload.cookie.trim() : '';
@@ -1021,7 +1045,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
       throw new Error('LinuxDO credential is missing cookie');
     }
 
-    const { data: res, cookieHeader } = await this.fetchJsonRawWithCookie<any>(`${baseUrl}/api/user/oauth/linuxdo`, {
+    const { data: res, cookieHeader } = await this.fetchJsonRawWithCookie<any>(baseUrl + '/api/user/oauth/linuxdo', {
       method: 'POST',
       body: JSON.stringify({ provider: 'linuxdo' }),
       headers: {

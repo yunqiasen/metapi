@@ -13,33 +13,6 @@ function normalizeProvider(value?: string | null): SiteAuthProviderId | null {
   return null;
 }
 
-function parseUrl(value: string): URL | null {
-  try {
-    return new URL(value.trim());
-  } catch {
-    return null;
-  }
-}
-
-function parseOauthCallback(text: string, defaultProvider?: SiteAuthProviderId): SiteAuthCaptureParseResult | null {
-  const url = parseUrl(text);
-  if (!url) return null;
-
-  const code = url.searchParams.get('code')?.trim();
-  const state = url.searchParams.get('state')?.trim();
-  if (!code) return null;
-
-  const provider = normalizeProvider(url.searchParams.get('provider')) || defaultProvider;
-  if (!provider || provider === 'linuxdo') return null;
-
-  return {
-    provider,
-    credentialType: 'oauth_token',
-    payload: state ? { code, state } : { code },
-    metadata: { captureMode: 'oauth_callback' },
-  };
-}
-
 function extractLinuxDoSessionCookie(text: string): string | null {
   const normalized = text.trim().replace(/^cookie:\s*/i, '');
   const match = normalized.match(/(?:^|;\s*)ld_auth_session=([^;\s]+)/i);
@@ -67,9 +40,6 @@ export function parseSiteAuthCaptureText(
   if (!trimmed) {
     throw new Error('no supported site auth credential found');
   }
-
-  const oauthCallback = parseOauthCallback(trimmed, normalizedDefaultProvider || undefined);
-  if (oauthCallback) return oauthCallback;
 
   const linuxDoCookie = parseLinuxDoCookie(trimmed, normalizedDefaultProvider || undefined);
   if (linuxDoCookie) return linuxDoCookie;

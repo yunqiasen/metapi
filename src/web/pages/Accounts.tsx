@@ -119,6 +119,13 @@ function resolveConnectionsSegment(search: string): ConnectionsSegment {
   return "session";
 }
 
+function resolveSiteAuthProviderLabel(provider: string): string {
+  if (provider === "github") return "GitHub";
+  if (provider === "google") return "Google";
+  if (provider === "linuxdo") return "LinuxDO";
+  return provider;
+}
+
 export default function Accounts() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -156,6 +163,15 @@ export default function Accounts() {
     useState("");
   const [browserCredentialCaptureError, setBrowserCredentialCaptureError] =
     useState("");
+  const [browserCredentialCaptureSaving, setBrowserCredentialCaptureSaving] =
+    useState(false);
+  const [browserCredentialCaptureContext, setBrowserCredentialCaptureContext] =
+    useState<null | {
+      provider: string;
+      siteId: number;
+      siteName?: string;
+      siteUrl?: string;
+    }>(null);
   const [createIntentPresetId, setCreateIntentPresetId] = useState<
     string | null
   >(null);
@@ -353,7 +369,12 @@ export default function Accounts() {
         );
       }
       toast.success("已打开目标站登录窗口。完成授权后保存该站 Session。");
-      openBrowserCredentialCapture();
+      openBrowserCredentialCapture({
+        provider,
+        siteId: tokenForm.siteId,
+        siteName: selectedTokenSite?.name,
+        siteUrl: started.targetSiteUrl || selectedTokenSite?.url,
+      });
     } catch (error: any) {
       toast.error(error?.message || "无法打开目标站授权登录");
     } finally {
@@ -383,15 +404,18 @@ export default function Accounts() {
   };
 
 
-  const openBrowserCredentialCapture = () => {
+  const openBrowserCredentialCapture = (context: typeof browserCredentialCaptureContext = null) => {
     setBrowserCredentialCaptureText("");
     setBrowserCredentialCaptureError("");
+    setBrowserCredentialCaptureContext(context);
     setBrowserCredentialCaptureOpen(true);
   };
 
   const closeBrowserCredentialCapture = () => {
     setBrowserCredentialCaptureOpen(false);
     setBrowserCredentialCaptureError("");
+    setBrowserCredentialCaptureContext(null);
+    setBrowserCredentialCaptureSaving(false);
   };
 
   const handleUseAccountPasswordLogin = () => {
@@ -403,9 +427,36 @@ export default function Accounts() {
     }));
   };
 
-  const applyBrowserCredentialCapture = () => {
+  const applyBrowserCredentialCapture = async () => {
     try {
       const parsed = parseBrowserSessionCredentialCapture(browserCredentialCaptureText);
+      const context = browserCredentialCaptureContext;
+      if (context?.provider && context.siteId) {
+        setBrowserCredentialCaptureSaving(true);
+        const providerLabel = resolveSiteAuthProviderLabel(context.provider);
+        const credentialLabel = parsed.username
+          ? providerLabel + " · " + parsed.username
+          : providerLabel + " · " + (context.siteName || context.siteUrl || "目标站 Session");
+        await api.importSiteAuthCredential({
+          provider: context.provider,
+          label: credentialLabel,
+          credentialType: "session_artifact",
+          payload: {
+            accessToken: parsed.accessToken,
+            ...(parsed.platformUserId ? { platformUserId: parsed.platformUserId } : {}),
+            ...(parsed.username ? { username: parsed.username } : {}),
+          },
+          metadata: {
+            source: "target-site-browser-login",
+            targetSiteId: context.siteId,
+            ...(context.siteName ? { targetSiteName: context.siteName } : {}),
+            ...(context.siteUrl ? { targetSiteUrl: context.siteUrl } : {}),
+          },
+        });
+        if (tokenForm.siteId) {
+          void loadSiteAuthRequirementsForSite(tokenForm.siteId);
+        }
+      }
       setTokenForm((current) => ({
         ...current,
         accessToken: parsed.accessToken,
@@ -415,9 +466,12 @@ export default function Accounts() {
       setVerifyResult(null);
       setBrowserCredentialCaptureOpen(false);
       setBrowserCredentialCaptureError("");
-      toast.success("已填入浏览器 Session 凭证和 UserID");
+      setBrowserCredentialCaptureContext(null);
+      toast.success(context ? "已保存持久登录凭证，并填入 Session" : "已填入浏览器 Session 凭证和 UserID");
     } catch (error: any) {
       setBrowserCredentialCaptureError(error?.message || "浏览器凭证解析失败");
+    } finally {
+      setBrowserCredentialCaptureSaving(false);
     }
   };
 
@@ -438,6 +492,8 @@ export default function Accounts() {
     setBrowserCredentialCaptureOpen(false);
     setBrowserCredentialCaptureText("");
     setBrowserCredentialCaptureError("");
+    setBrowserCredentialCaptureContext(null);
+    setBrowserCredentialCaptureSaving(false);
   };
 
   const closeAddPanel = () => {
@@ -2629,9 +2685,13 @@ export default function Accounts() {
                 <button
                   onClick={applyBrowserCredentialCapture}
                   className="btn btn-primary"
-                  disabled={!browserCredentialCaptureText.trim()}
+                  disabled={browserCredentialCaptureSaving || !browserCredentialCaptureText.trim()}
                 >
-                  填入 Session
+                  {browserCredentialCaptureSaving
+                    ? "保存中..."
+                    : browserCredentialCaptureContext
+                      ? "保存为持久凭证并填入 Session"
+                      : "填入 Session"}
                 </button>
               </>
             }

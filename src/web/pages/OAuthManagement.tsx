@@ -56,14 +56,14 @@ function normalizeSiteAuthImportProvider(provider: string): SiteAuthImportProvid
 }
 
 function resolveSiteAuthImportProviderLabel(provider: SiteAuthImportProvider): string {
-  if (provider === 'github') return 'GitHub Token';
-  if (provider === 'google') return 'Google Token';
+  if (provider === 'github') return 'GitHub 目标站 Session';
+  if (provider === 'google') return 'Google 目标站 Session';
   return 'LinuxDO Cookie';
 }
 
 function resolveSiteAuthImportSecretPlaceholder(provider: SiteAuthImportProvider): string {
-  if (provider === 'github') return '粘贴 GitHub access token';
-  if (provider === 'google') return '粘贴 Google OAuth access token';
+  if (provider === 'github') return '粘贴目标中转站返回的 GitHub 登录 Session';
+  if (provider === 'google') return '粘贴目标中转站返回的 Google 登录 Session';
   return '粘贴 ld_auth_session=...';
 }
 
@@ -909,7 +909,7 @@ export default function OAuthManagement() {
       return;
     }
     const provider = siteAuthImportProvider;
-    const credentialType = provider === 'linuxdo' ? 'cookie' : 'oauth_token';
+    const credentialType = provider === 'linuxdo' ? 'cookie' : 'session_artifact';
     setSiteAuthImporting(true);
     try {
       await api.importSiteAuthCredential({
@@ -1019,7 +1019,7 @@ export default function OAuthManagement() {
       setDrawerProjectId('');
       resetOauthProxySettings();
       setDrawerOpen(true);
-      setSessionInfo('从连接页跳转到 OAuth 管理，请在这里完成第三方登录授权并保存凭证。');
+      setSessionInfo('从连接页跳转到 OAuth 管理。第三方登录态要回连接管理选择目标中转站后保存。');
       return;
     }
 
@@ -1148,9 +1148,7 @@ export default function OAuthManagement() {
     ]).map((provider) => ({
       value: provider.provider,
       label: provider.label,
-      description: provider.provider === 'linuxdo'
-        ? 'LinuxDO 授权回调后自动保存 Cookie'
-        : '在添加 Session 连接时选择目标站后授权',
+      description: '先选择目标中转站，再保存该站登录态',
     })),
     [siteAuthProviders],
   );
@@ -1455,30 +1453,8 @@ export default function OAuthManagement() {
   const handleStartSiteAuthAuthorization = async () => {
     const provider = selectedSiteAuthProvider;
     if (!provider) return;
-    if (provider.provider === 'github' || provider.provider === 'google') {
-      setSessionInfo(`${provider.label} 要在添加 Session 连接时选择目标中转站后授权。已打开连接管理。`);
-      navigate('/accounts?segment=session&create=1');
-      return;
-    }
-    const actionKey = `site-auth-start:${provider.provider}`;
-    setActionLoadingKey(actionKey);
-    try {
-      const started = await api.startSiteAuthProviderAuthorization(provider.provider);
-      setSessionInfo(provider.provider === 'linuxdo'
-        ? '等待 LinuxDO 登录授权回调并保存凭证'
-        : '等待第三方登录授权完成');
-      setActiveSiteAuthSession({
-        provider: started.provider,
-        state: started.state,
-        authorizationUrl: started.authorizationUrl,
-        instructions: started.instructions,
-      });
-      openOAuthPopup(`site-auth-${provider.provider}`, started.authorizationUrl);
-    } catch (error: any) {
-      setSessionError(error?.message || '无法启动第三方登录授权');
-    } finally {
-      setActionLoadingKey('');
-    }
+    setSessionInfo(provider.label + ' 要先选择目标中转站，再保存该站登录态。已打开连接管理。');
+    navigate('/accounts?segment=session&create=1');
   };
 
   const handleSubmitManualCallback = async () => {
@@ -2630,7 +2606,7 @@ export default function OAuthManagement() {
               {drawerIntent.mode === 'create' && createConnectionMode === 'site-auth' ? (
                 <>
                   <div className="oauth-form-note">
-                    LinuxDO 可以在这里保存通用凭证。GitHub / Google 要先选择目标中转站，再从添加 Session 连接里打开该站自己的登录小窗。
+                    这里不再保存 GitHub / Google / LinuxDO 官方站 token。先到连接管理选择目标中转站，打开该站自己的登录小窗，完成后保存目标站登录态。
                   </div>
                   <button
                     type="button"
@@ -2640,9 +2616,7 @@ export default function OAuthManagement() {
                   >
                     {actionLoadingKey.startsWith('site-auth-start:')
                       ? '启动中...'
-                      : selectedSiteAuthProvider?.provider === 'github' || selectedSiteAuthProvider?.provider === 'google'
-                        ? `去添加 Session 连接 · ${selectedSiteAuthProvider?.label || ''}`.trim()
-                        : `授权并保存 ${selectedSiteAuthProvider?.label || ''}`.trim()}
+                      : `去连接管理保存 ${selectedSiteAuthProvider?.label || ''} 登录态`.trim()}
                   </button>
                 </>
               ) : (

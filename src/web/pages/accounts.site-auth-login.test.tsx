@@ -15,6 +15,7 @@ const { apiMock } = vi.hoisted(() => ({
     getSiteAuthRequirements: vi.fn(),
     createAccountFromSiteAuthCredential: vi.fn(),
     startAccountSiteAuthBrowserLogin: vi.fn(),
+    importSiteAuthCredential: vi.fn(),
   },
 }));
 
@@ -108,6 +109,17 @@ describe('Accounts site auth login', () => {
       authorizationUrl: 'https://target.example.com/login',
       instructions: { mode: 'target_site_browser_login' },
     });
+    apiMock.importSiteAuthCredential.mockResolvedValue({
+      success: true,
+      item: {
+        id: 77,
+        provider: 'github',
+        label: 'GitHub · browser-user',
+        credentialType: 'session_artifact',
+        status: 'active',
+        metadata: {},
+      },
+    });
   });
 
   afterEach(() => {
@@ -192,6 +204,86 @@ describe('Accounts site auth login', () => {
         expect.stringContaining('popup=yes'),
       );
       expect(collectText(root.root)).not.toContain('添加 GitHub 凭证');
+    } finally {
+      root?.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('saves the target-site browser login result as a reusable credential', async () => {
+    const openSpy = vi.fn(() => null);
+    vi.stubGlobal('window', { open: openSpy });
+    apiMock.getSiteAuthRequirements.mockResolvedValueOnce({
+      siteId: 31,
+      hasThirdPartyLogin: true,
+      requirements: [
+        {
+          provider: 'github',
+          label: 'GitHub',
+          required: true,
+          confidence: 'detected',
+          reason: 'login page contains this provider',
+          availableCredentials: [],
+        },
+      ],
+    });
+
+    const root = await renderAccountsPage();
+    try {
+      await clickButton(root, '+ 添加连接');
+
+      const selects = root.root.findAllByType(ModernSelect);
+      const siteSelect = selects[1];
+      await act(async () => {
+        siteSelect?.props.onChange('31');
+      });
+      await flushMicrotasks();
+
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root.root)).toContain('用 GitHub 浏览器登录该站点');
+      });
+
+      await clickButton(root, '用 GitHub 浏览器登录该站点');
+
+      const captureTextarea = root.root.find((node) => (
+        node.type === 'textarea'
+        && typeof node.props.placeholder === 'string'
+        && node.props.placeholder.includes('粘贴浏览器脚本输出')
+      ));
+      await act(async () => {
+        captureTextarea.props.onChange({
+          target: {
+            value: JSON.stringify({
+              accessToken: 'browser-session-token',
+              userId: 2468,
+              username: 'browser-user',
+            }),
+          },
+        });
+      });
+      await flushMicrotasks();
+
+      expect(collectText(root.root)).toContain('保存为持久凭证并填入 Session');
+      await clickButton(root, '保存为持久凭证并填入 Session');
+
+      expect(apiMock.importSiteAuthCredential).toHaveBeenCalledWith({
+        provider: 'github',
+        label: 'GitHub · browser-user',
+        credentialType: 'session_artifact',
+        payload: {
+          accessToken: 'browser-session-token',
+          platformUserId: '2468',
+          username: 'browser-user',
+        },
+        metadata: {
+          source: 'target-site-browser-login',
+          targetSiteId: 31,
+          targetSiteName: 'LinuxDO Site',
+          targetSiteUrl: 'https://target.example.com',
+        },
+      });
+      expect(collectText(root.root)).toContain('已保存持久登录凭证');
     } finally {
       root?.unmount();
       vi.unstubAllGlobals();

@@ -18,7 +18,7 @@ describe('site auth provider registry', () => {
         provider: 'linuxdo',
         label: 'LinuxDO',
         credentialTypes: ['cookie', 'session_artifact', 'manual'],
-        captureModes: ['oauth_callback', 'manual_paste', 'browser_assisted'],
+        captureModes: ['manual_paste', 'browser_assisted'],
       },
     });
   });
@@ -32,14 +32,14 @@ describe('site auth provider registry', () => {
     expect(getSiteAuthProviderDefinition('unknown')).toBeUndefined();
   });
 
-  it('keeps GitHub and Google on callback authorization instead of manual token capture', () => {
+  it('keeps GitHub and Google as target-site session artifacts instead of official OAuth tokens', () => {
     expect(getSiteAuthProviderDefinition('github')?.metadata).toMatchObject({
-      credentialTypes: ['oauth_token'],
-      captureModes: ['oauth_callback'],
+      credentialTypes: ['session_artifact'],
+      captureModes: ['browser_assisted'],
     });
     expect(getSiteAuthProviderDefinition('google')?.metadata).toMatchObject({
-      credentialTypes: ['oauth_token'],
-      captureModes: ['oauth_callback'],
+      credentialTypes: ['session_artifact'],
+      captureModes: ['browser_assisted'],
     });
   });
 });

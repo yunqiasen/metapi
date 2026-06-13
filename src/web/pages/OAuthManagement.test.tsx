@@ -281,14 +281,14 @@ describe('OAuthManagement page', () => {
         expect(text).toContain('Provider 连接列表');
         expect(text).toContain('第三方登录凭证');
         expect(text).toContain('暂无第三方登录凭证');
-        expect(text).toContain('添加 LinuxDO 凭证或浏览器捕获的目标站 Session 后，可在添加 Session 连接时复用。');
+        expect(text).toContain('在连接管理选择目标中转站并完成浏览器登录后，会保存成可复用的目标站 Session。');
       });
     } finally {
       root?.unmount();
     }
   });
 
-  it('starts LinuxDO credential authorization from the new OAuth connection drawer', async () => {
+  it('routes LinuxDO credential creation to target-site session capture from the new OAuth connection drawer', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -298,36 +298,9 @@ describe('OAuthManagement page', () => {
     });
     apiMock.getSiteAuthProviders.mockResolvedValue({
       providers: [
-        { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie'], captureModes: ['oauth_callback'], enabled: true },
+        { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie', 'session_artifact'], captureModes: ['browser_assisted'], enabled: true },
       ],
     });
-    apiMock.startSiteAuthProviderAuthorization.mockResolvedValueOnce({
-      provider: 'linuxdo',
-      state: 'site-auth-state-1',
-      authorizationUrl: 'https://linux.do/user-api-key/new?state=site-auth-state-1',
-      instructions: {
-        redirectUri: 'http://metapi.local/api/site-auth/callback/linuxdo',
-        callbackPath: '/api/site-auth/callback/linuxdo',
-        manualCallbackDelayMs: 15000,
-        mode: 'oauth',
-      },
-    });
-    apiMock.getSiteAuthAuthorizationSession
-      .mockResolvedValueOnce({ provider: 'linuxdo', state: 'site-auth-state-1', status: 'pending' })
-      .mockResolvedValueOnce({
-        provider: 'linuxdo',
-        state: 'site-auth-state-1',
-        status: 'success',
-        credential: {
-          id: 33,
-          provider: 'linuxdo',
-          label: 'LinuxDO 浏览器授权',
-          credentialType: 'cookie',
-          status: 'active',
-          metadata: {},
-        },
-      });
-
     let root!: WebTestRenderer;
     try {
       await act(async () => {
@@ -346,29 +319,21 @@ describe('OAuthManagement page', () => {
 
       await clickButton(root!, '授权添加凭证');
       expect(collectText(root.root)).toContain('站点登录授权');
-      expect(collectText(root.root)).toContain('授权并保存 LinuxDO');
+      expect(collectText(root.root)).toContain('去连接管理保存 LinuxDO 登录态');
+      expect(collectText(root.root)).toContain('这里不再保存 GitHub / Google / LinuxDO 官方站 token');
 
-      await clickButton(root!, '授权并保存 LinuxDO');
+      await clickButton(root!, '去连接管理保存 LinuxDO 登录态');
       await vi.waitFor(async () => {
         await flushMicrotasks();
       });
 
-      expect(apiMock.startSiteAuthProviderAuthorization).toHaveBeenCalledWith('linuxdo');
-      expect(openMock).toHaveBeenCalledWith(
-        'https://linux.do/user-api-key/new?state=site-auth-state-1',
-        'oauth-site-auth-linuxdo',
-        expect.stringContaining('width=540'),
+      expect(apiMock.startSiteAuthProviderAuthorization).not.toHaveBeenCalled();
+      expect(apiMock.getSiteAuthAuthorizationSession).not.toHaveBeenCalled();
+      expect(openMock).not.toHaveBeenCalledWith(
+        expect.stringContaining('linux.do/user-api-key/new'),
+        expect.anything(),
+        expect.anything(),
       );
-
-      await act(async () => {
-        vi.advanceTimersByTime(1600);
-      });
-      await vi.waitFor(async () => {
-        await flushMicrotasks();
-      });
-
-      expect(apiMock.getSiteAuthAuthorizationSession).toHaveBeenCalledWith('site-auth-state-1');
-      expect(apiMock.getSiteAuthCredentials).toHaveBeenCalledTimes(2);
     } finally {
       root?.unmount();
     }
@@ -384,8 +349,8 @@ describe('OAuthManagement page', () => {
     });
     apiMock.getSiteAuthProviders.mockResolvedValue({
       providers: [
-        { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
-        { provider: 'google', label: 'Google', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
+        { provider: 'github', label: 'GitHub', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+        { provider: 'google', label: 'Google', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
       ],
     });
 
@@ -405,7 +370,8 @@ describe('OAuthManagement page', () => {
         await flushMicrotasks();
         const text = collectText(root!.root);
         expect(text).toContain('站点登录授权');
-        expect(text).toContain('去添加 Session 连接 · Google');
+        expect(text).toContain('去连接管理保存 Google 登录态');
+        expect(text).toContain('先到连接管理选择目标中转站');
         expect(text).not.toContain('Google Token');
       });
     } finally {
@@ -668,8 +634,8 @@ describe('OAuthManagement page', () => {
     apiMock.getSiteAuthProviders.mockResolvedValue({
       providers: [
         { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie'], captureModes: ['browser_assisted'], enabled: true },
-        { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
-        { provider: 'google', label: 'Google', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
+        { provider: 'github', label: 'GitHub', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+        { provider: 'google', label: 'Google', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
       ],
     });
 

@@ -81,7 +81,9 @@ Use `Provider 与登录凭证` for two separate things:
 - Provider connections: routeable OAuth providers such as Codex, Claude, Gemini CLI, and Antigravity.
 - Third-party login credentials: reusable login material for target sites, currently LinuxDO Cookie plus target-site Session material captured after browser login.
 
-GitHub and Google target-site login starts from `连接管理 -> 添加 Session 连接`: select the target site, then click `用 GitHub/Google 浏览器登录该站点`. This opens the target station's own login page so the browser can reuse the already logged-in GitHub/Google identity. The resulting target-site Session is then saved through the browser credential capture flow.
+GitHub, Google, and LinuxDO target-site login starts from `连接管理 -> 添加 Session 连接`: select the target site, then click `用 GitHub/Google/LinuxDO 浏览器登录该站点`. This opens the target station's own login page so the browser can reuse the identity that is already logged in there. The resulting target-site Session is saved as a `session_artifact` credential through the browser credential capture flow.
+
+Do not use LinuxDO `user-api-key/new` as the main workflow. Some target sites disable user API key publishing, and this fork now disables the legacy provider authorization start endpoint. The maintained path is target-site browser login -> persist target-site Session -> reuse it when creating a normal Session connection.
 
 Adding a Session connection can query the selected site's login requirements, open the target station's browser login, or reuse saved third-party credentials to create a normal Session account. Browser-assisted import only parses text the operator pastes manually; it does not read cross-site HttpOnly Cookies.
 

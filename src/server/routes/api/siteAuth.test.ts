@@ -1,5 +1,4 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { constants, publicEncrypt } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -96,125 +95,69 @@ describe('site auth routes', () => {
     });
   });
 
-  it('starts GitHub browser authorization and saves the exchanged credential on callback', async () => {
-    const startResponse = await app.inject({
+  it('rejects legacy provider authorization starts in favor of target-site session capture', async () => {
+    const githubStartResponse = await app.inject({
       method: 'POST',
       url: '/api/site-auth/providers/github/start',
       headers: { origin: 'http://metapi.local' },
     });
-
-    expect(startResponse.statusCode).toBe(200);
-    const startBody = startResponse.json();
-    expect(startBody.authorizationUrl).toContain('https://github.com/login/oauth/authorize');
-    expect(startBody.authorizationUrl).toContain(encodeURIComponent('http://metapi.local/api/site-auth/callback/github'));
-    expect(startBody.instructions).toMatchObject({
-      redirectUri: 'http://metapi.local/api/site-auth/callback/github',
-      mode: 'oauth',
-    });
-
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ access_token: 'gho-secret-token', token_type: 'bearer', scope: 'read:user,user:email' }),
-    });
-
-    const callbackResponse = await app.inject({
-      method: 'GET',
-      url: `/api/site-auth/callback/github?state=${encodeURIComponent(startBody.state)}&code=github-code-1`,
-    });
-
-    expect(callbackResponse.statusCode).toBe(200);
-    expect(callbackResponse.body).toContain('授权已保存');
-    expect(callbackResponse.body).not.toContain('gho-secret-token');
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://github.com/login/oauth/access_token',
-      expect.objectContaining({ method: 'POST' }),
-    );
-
-    const sessionResponse = await app.inject({
-      method: 'GET',
-      url: `/api/site-auth/sessions/${encodeURIComponent(startBody.state)}`,
-    });
-    expect(sessionResponse.statusCode).toBe(200);
-    expect(sessionResponse.body).not.toContain('gho-secret-token');
-    expect(sessionResponse.json()).toMatchObject({
-      provider: 'github',
-      state: startBody.state,
-      status: 'success',
-      credential: expect.objectContaining({ provider: 'github', credentialType: 'oauth_token' }),
-    });
-
-    const payload = await vault.getSiteAuthCredentialPayload(sessionResponse.json().credential.id);
-    expect(payload).toMatchObject({ accessToken: 'gho-secret-token' });
-  });
-
-  it('starts LinuxDO user-api-key authorization and saves the OTP session cookie on callback', async () => {
-    const startResponse = await app.inject({
+    const linuxDoStartResponse = await app.inject({
       method: 'POST',
       url: '/api/site-auth/providers/linuxdo/start',
       headers: { origin: 'http://metapi.local' },
     });
 
-    expect(startResponse.statusCode).toBe(200);
-    const startBody = startResponse.json();
-    const authorizationUrl = new URL(startBody.authorizationUrl);
-    expect(authorizationUrl.origin).toBe('https://linux.do');
-    expect(authorizationUrl.pathname).toBe('/user-api-key/new');
-    expect(authorizationUrl.searchParams.get('auth_redirect')).toBe('http://metapi.local/api/site-auth/callback/linuxdo');
-    expect(authorizationUrl.searchParams.get('scopes')).toContain('one_time_password');
-    expect(authorizationUrl.searchParams.get('padding')).toBe('oaep');
-    expect(startBody.instructions).toMatchObject({
-      redirectUri: 'http://metapi.local/api/site-auth/callback/linuxdo',
-      mode: 'oauth',
-    });
+    expect(githubStartResponse.statusCode).toBe(400);
+    expect(linuxDoStartResponse.statusCode).toBe(400);
+    expect(githubStartResponse.body).toContain('target-site session capture');
+    expect(linuxDoStartResponse.body).toContain('target-site session capture');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
-    const publicKey = authorizationUrl.searchParams.get('public_key') || '';
-    const nonce = authorizationUrl.searchParams.get('nonce') || '';
-    const payload = publicEncrypt(
-      { key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING },
-      Buffer.from(JSON.stringify({ key: 'linuxdo-user-api-key', nonce, api: 4, username: 'linuxdo-user' })),
-    ).toString('base64');
-    const oneTimePassword = publicEncrypt(
-      { key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING },
-      Buffer.from('linuxdo-otp-1'),
-    ).toString('base64');
-
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      headers: {
-        getSetCookie: () => ['ld_auth_session=auto-session; Path=/; HttpOnly; Secure', '_t=csrf-token; Path=/; Secure'],
+  it('imports a target-site session artifact without returning secret payloads', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/site-auth/credentials/import',
+      payload: {
+        provider: 'github',
+        label: 'GitHub 目标站 Session',
+        credentialType: 'session_artifact',
+        subject: 'target-user-2468',
+        username: 'target-user',
+        payload: {
+          accessToken: 'target-site-session-secret',
+          platformUserId: 2468,
+        },
+        metadata: {
+          source: 'target-site-browser-login',
+          targetSiteId: 31,
+        },
       },
     });
 
-    const callbackResponse = await app.inject({
-      method: 'GET',
-      url: `/api/site-auth/callback/linuxdo?state=${encodeURIComponent(startBody.state)}&payload=${encodeURIComponent(payload)}&oneTimePassword=${encodeURIComponent(oneTimePassword)}`,
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain('target-site-session-secret');
+    expect(response.json()).toMatchObject({
+      success: true,
+      item: {
+        provider: 'github',
+        label: 'GitHub 目标站 Session',
+        credentialType: 'session_artifact',
+        subject: 'target-user-2468',
+        username: 'target-user',
+        status: 'active',
+        metadata: {
+          source: 'target-site-browser-login',
+          targetSiteId: 31,
+        },
+      },
     });
 
-    expect(callbackResponse.statusCode).toBe(200);
-    expect(callbackResponse.body).toContain('授权已保存');
-    expect(callbackResponse.body).not.toContain('auto-session');
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://linux.do/session/otp/linuxdo-otp-1',
-      expect.objectContaining({ redirect: 'manual' }),
-    );
-
-    const sessionResponse = await app.inject({
-      method: 'GET',
-      url: `/api/site-auth/sessions/${encodeURIComponent(startBody.state)}`,
+    const payload = await vault.getSiteAuthCredentialPayload(response.json().item.id);
+    expect(payload).toMatchObject({
+      accessToken: 'target-site-session-secret',
+      platformUserId: 2468,
     });
-    expect(sessionResponse.statusCode).toBe(200);
-    expect(sessionResponse.body).not.toContain('auto-session');
-    expect(sessionResponse.json()).toMatchObject({
-      provider: 'linuxdo',
-      state: startBody.state,
-      status: 'success',
-      credential: expect.objectContaining({ provider: 'linuxdo', credentialType: 'cookie' }),
-    });
-
-    const savedPayload = await vault.getSiteAuthCredentialPayload(sessionResponse.json().credential.id);
-    expect(savedPayload).toMatchObject({ cookie: expect.stringContaining('ld_auth_session=auto-session') });
   });
 
   it('reports credential decryptability without leaking payloads', async () => {

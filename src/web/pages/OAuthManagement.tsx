@@ -169,11 +169,6 @@ const COLUMN_OPTIONS: Array<{ key: ColumnKey; label: string }> = [
 
 const OAUTH_POPUP_FEATURES = 'popup=yes,width=540,height=760,resizable=yes,scrollbars=yes';
 
-type PreparedOAuthPopup = {
-  popup: Window | null;
-  openedUrl: string;
-};
-
 function openOAuthPopup(provider: string, authorizationUrl: string) {
   if (typeof window === 'undefined' || typeof window.open !== 'function') return null;
   const popup = window.open(
@@ -192,74 +187,6 @@ function openOAuthPopup(provider: string, authorizationUrl: string) {
     popup.focus();
   }
   return popup;
-}
-
-function openPreparedOAuthPopup(provider: string, initialAuthorizationUrl?: string | null): PreparedOAuthPopup {
-  const initialUrl = typeof initialAuthorizationUrl === 'string' && initialAuthorizationUrl.trim()
-    ? initialAuthorizationUrl.trim()
-    : '';
-  const openedUrl = initialUrl || 'about:blank';
-  if (typeof window === 'undefined' || typeof window.open !== 'function') return { popup: null, openedUrl };
-  const popup = window.open(
-    'about:blank',
-    `oauth-${provider}`,
-    OAUTH_POPUP_FEATURES,
-  );
-  if (popup) {
-    try {
-      const redirectScript = initialUrl
-        ? `<script>window.location.replace(${JSON.stringify(initialUrl)});<\/script>`
-        : '';
-      const message = initialUrl ? '正在打开目标站登录窗口...' : '正在准备打开目标站登录窗口...';
-      popup.document.open();
-      popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Metapi Login</title></head><body style="font-family:sans-serif;padding:24px"><p>${message}</p>${redirectScript}</body></html>`);
-      popup.document.close();
-    } catch {
-      try {
-        if (initialUrl) popup.location.replace(initialUrl);
-      } catch {
-        // Some browsers restrict writing into the popup; navigation fallback still applies.
-      }
-    }
-    if (typeof popup.focus === 'function') popup.focus();
-  }
-  return { popup, openedUrl };
-}
-
-function normalizePopupUrlForCompare(value: string): string {
-  return value.trim().replace(/\/+$/, '');
-}
-
-function navigatePreparedOAuthPopup(prepared: PreparedOAuthPopup, provider: string, authorizationUrl: string) {
-  const nextUrl = authorizationUrl.trim();
-  const { popup, openedUrl } = prepared;
-  if (nextUrl && normalizePopupUrlForCompare(openedUrl) === normalizePopupUrlForCompare(nextUrl)) {
-    try {
-      if (popup && typeof popup.focus === 'function') popup.focus();
-    } catch {
-      // Ignore focus failures on cross-origin popups.
-    }
-    return;
-  }
-  if (popup) {
-    try {
-      popup.location.replace(nextUrl);
-      if (typeof popup.focus === 'function') popup.focus();
-      return;
-    } catch {
-      // Fall back to a direct popup open below.
-    }
-  }
-  openOAuthPopup(provider, nextUrl);
-}
-
-function closePreparedOAuthPopup(popup: Window | null) {
-  if (!popup) return;
-  try {
-    popup.close();
-  } catch {
-    // Ignore browser popup close restrictions.
-  }
 }
 
 function resolveTargetSiteLoginUrl(site: any): string {
@@ -1310,6 +1237,11 @@ export default function OAuthManagement() {
     sites.find((site) => String(site?.id || '') === selectedSiteAuthTargetSiteId) || null
   ), [selectedSiteAuthTargetSiteId, sites]);
 
+  const selectedSiteAuthTargetLoginUrl = useMemo(
+    () => resolveTargetSiteLoginUrl(selectedSiteAuthTargetSite),
+    [selectedSiteAuthTargetSite],
+  );
+
   const filteredConnections = useMemo(() => {
     const search = searchQuery.trim().toLowerCase();
     return connections.filter((connection) => {
@@ -1628,20 +1560,24 @@ export default function OAuthManagement() {
     }
   };
 
-  const handleStartSiteAuthAuthorization = async () => {
+  const handleStartSiteAuthAuthorization = async (event?: { preventDefault?: () => void }) => {
     const provider = selectedSiteAuthProvider;
-    if (!provider) return;
+    if (!provider || actionLoadingKey.startsWith('site-auth-browser-start:')) {
+      event?.preventDefault?.();
+      return;
+    }
     const siteId = Number.parseInt(selectedSiteAuthTargetSiteId, 10);
     if (!Number.isInteger(siteId) || siteId <= 0) {
+      event?.preventDefault?.();
       setSessionError('请先选择目标中转站');
       return;
     }
+    if (!selectedSiteAuthTargetLoginUrl) {
+      event?.preventDefault?.();
+      setSessionError('目标中转站缺少登录地址');
+      return;
+    }
     const providerLabel = resolveSiteAuthProviderLabel(provider.provider) || provider.label;
-    const popupProvider = `site-auth-target-${provider.provider}`;
-    const popup = openPreparedOAuthPopup(
-      popupProvider,
-      resolveTargetSiteLoginUrl(selectedSiteAuthTargetSite),
-    );
     const actionKey = `site-auth-browser-start:${provider.provider}`;
     setActionLoadingKey(actionKey);
     try {
@@ -1652,7 +1588,6 @@ export default function OAuthManagement() {
       const siteName = asTrimmedString(selectedSiteAuthTargetSite?.name);
       const siteUrl = asTrimmedString(started?.targetSiteUrl)
         || asTrimmedString(selectedSiteAuthTargetSite?.url);
-      navigatePreparedOAuthPopup(popup, popupProvider, started.authorizationUrl);
       setSiteAuthBrowserCaptureContext({
         provider: provider.provider,
         providerLabel,
@@ -1665,7 +1600,6 @@ export default function OAuthManagement() {
       setSiteAuthBrowserCaptureOpen(true);
       setSessionInfo(`已打开 ${siteName || siteUrl || '目标中转站'} 登录窗口。登录完成后在这里保存 ${providerLabel} 目标站 Session。`);
     } catch (error: any) {
-      closePreparedOAuthPopup(popup.popup);
       setSessionError(error?.message || '无法打开目标站登录窗口');
     } finally {
       setActionLoadingKey('');
@@ -2892,18 +2826,21 @@ export default function OAuthManagement() {
               {drawerIntent.mode === 'create' && createConnectionMode === 'site-auth' ? (
                 <>
                   <div className="oauth-form-note">
-                    这里不保存 GitHub / Google / LinuxDO 官方站 token。选择目标中转站后，直接打开该站自己的登录小窗，完成后在这里保存目标站登录态。
+                    这里不保存 GitHub / Google / LinuxDO 官方站 token。选择目标中转站后，直接打开该站自己的登录页，完成后在这里保存目标站登录态。
                   </div>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
+                  <a
+                    className={`btn btn-primary ${(!selectedSiteAuthProvider || !selectedSiteAuthTargetSiteId || !selectedSiteAuthTargetLoginUrl || actionLoadingKey.startsWith('site-auth-browser-start:')) ? 'is-disabled' : ''}`.trim()}
+                    href={selectedSiteAuthTargetLoginUrl || '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-testid="site-auth-target-login-link"
+                    aria-disabled={!selectedSiteAuthProvider || !selectedSiteAuthTargetSiteId || !selectedSiteAuthTargetLoginUrl || actionLoadingKey.startsWith('site-auth-browser-start:')}
                     onClick={handleStartSiteAuthAuthorization}
-                    disabled={!selectedSiteAuthProvider || !selectedSiteAuthTargetSiteId || actionLoadingKey.startsWith('site-auth-browser-start:')}
                   >
                     {actionLoadingKey.startsWith('site-auth-browser-start:')
                       ? '启动中...'
                       : `打开 ${selectedSiteAuthProvider?.label || ''} 登录并保存凭证`.trim()}
-                  </button>
+                  </a>
                 </>
               ) : (
                 <>

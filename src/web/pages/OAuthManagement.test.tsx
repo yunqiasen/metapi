@@ -76,6 +76,14 @@ function findButtonContaining(root: WebTestRenderer, label: string) {
   ));
 }
 
+function findLink(root: WebTestRenderer, label: string) {
+  return root.root.find((node) => (
+    node.type === 'a'
+    && typeof node.props.onClick === 'function'
+    && collectText(node).trim() === label
+  ));
+}
+
 function findOauthSettingInput(root: WebTestRenderer, key: string) {
   return root.root.find((node) => (
     node.type === 'input'
@@ -117,6 +125,15 @@ async function clickButtonContaining(root: WebTestRenderer, label: string) {
   });
   await flushMicrotasks();
   return button;
+}
+
+async function clickLink(root: WebTestRenderer, label: string) {
+  const link = findLink(root, label);
+  await act(async () => {
+    await link.props.onClick({ preventDefault: vi.fn() });
+  });
+  await flushMicrotasks();
+  return link;
 }
 
 describe('OAuthManagement page', () => {
@@ -313,7 +330,7 @@ describe('OAuthManagement page', () => {
     }
   });
 
-  it('opens a synchronous target-site login bridge popup before waiting for the target-site login API', async () => {
+  it('uses a native target-site login link instead of a scripted popup', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -330,18 +347,6 @@ describe('OAuthManagement page', () => {
     apiMock.startAccountSiteAuthBrowserLogin.mockImplementationOnce(() => new Promise((resolve) => {
       resolveStart = resolve;
     }));
-    const documentOpenMock = vi.fn();
-    const documentWriteMock = vi.fn();
-    const documentCloseMock = vi.fn();
-    openMock.mockReturnValueOnce({
-      focus: focusMock,
-      document: {
-        open: documentOpenMock,
-        write: documentWriteMock,
-        close: documentCloseMock,
-      },
-    });
-
     let root!: WebTestRenderer;
     try {
       await act(async () => {
@@ -359,22 +364,17 @@ describe('OAuthManagement page', () => {
       });
 
       await clickButton(root!, '授权添加凭证');
-      const startButton = findButton(root!, '打开 LinuxDO 登录并保存凭证');
+      const startLink = findLink(root!, '打开 LinuxDO 登录并保存凭证');
+      expect(startLink.props.href).toBe('https://target.example.com/login');
+      expect(startLink.props.target).toBe('_blank');
+      const preventDefaultMock = vi.fn();
       await act(async () => {
-        void startButton.props.onClick();
+        void startLink.props.onClick({ preventDefault: preventDefaultMock });
         await Promise.resolve();
       });
 
-      expect(openMock).toHaveBeenNthCalledWith(
-        1,
-        'about:blank',
-        'oauth-site-auth-target-linuxdo',
-        expect.stringContaining('width=540'),
-      );
-      expect(String(openMock.mock.calls[0]?.[2] || '')).not.toContain('noopener');
-      expect(documentOpenMock).toHaveBeenCalled();
-      expect(documentWriteMock).toHaveBeenCalledWith(expect.stringContaining('https://target.example.com/login'));
-      expect(documentCloseMock).toHaveBeenCalled();
+      expect(preventDefaultMock).not.toHaveBeenCalled();
+      expect(openMock).not.toHaveBeenCalled();
       expect(apiMock.startAccountSiteAuthBrowserLogin).toHaveBeenCalledWith({ siteId: 31, provider: 'linuxdo' });
 
       await act(async () => {
@@ -436,7 +436,7 @@ describe('OAuthManagement page', () => {
       expect(collectText(root.root)).toContain('打开 LinuxDO 登录并保存凭证');
       expect(collectText(root.root)).toContain('这里不保存 GitHub / Google / LinuxDO 官方站 token');
 
-      await clickButton(root!, '打开 LinuxDO 登录并保存凭证');
+      await clickLink(root!, '打开 LinuxDO 登录并保存凭证');
       await vi.waitFor(async () => {
         await flushMicrotasks();
       });
@@ -444,11 +444,7 @@ describe('OAuthManagement page', () => {
       expect(apiMock.startAccountSiteAuthBrowserLogin).toHaveBeenCalledWith({ siteId: 31, provider: 'linuxdo' });
       expect(apiMock.startSiteAuthProviderAuthorization).not.toHaveBeenCalled();
       expect(apiMock.getSiteAuthAuthorizationSession).not.toHaveBeenCalled();
-      expect(openMock).toHaveBeenCalledWith(
-        'about:blank',
-        'oauth-site-auth-target-linuxdo',
-        expect.stringContaining('width=540'),
-      );
+      expect(openMock).not.toHaveBeenCalled();
       expect(openMock).not.toHaveBeenCalledWith(
         expect.stringContaining('linux.do/user-api-key/new'),
         expect.anything(),

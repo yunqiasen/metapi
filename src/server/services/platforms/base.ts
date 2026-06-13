@@ -105,6 +105,17 @@ export type ExternalAuthLoginResult = {
   sourceProvider: 'linuxdo' | 'github' | 'google';
 };
 
+export type ExternalBrowserLoginInput = {
+  sourceProvider: 'linuxdo' | 'github' | 'google';
+};
+
+export type ExternalBrowserLoginStartResult = {
+  sourceProvider: 'linuxdo' | 'github' | 'google';
+  authorizationUrl: string;
+  targetSiteUrl: string;
+  completionMode: 'target_site_session';
+};
+
 export interface PlatformAdapter {
   readonly platformName: string;
   detect(url: string): Promise<boolean>;
@@ -121,6 +132,7 @@ export interface PlatformAdapter {
   createApiToken(baseUrl: string, accessToken: string, platformUserId?: number, options?: CreateApiTokenOptions): Promise<boolean>;
   deleteApiToken(baseUrl: string, accessToken: string, tokenKey: string, platformUserId?: number): Promise<boolean>;
   externalAuthLogin?(baseUrl: string, input: ExternalAuthLoginInput): Promise<ExternalAuthLoginResult>;
+  startExternalBrowserLogin?(baseUrl: string, input: ExternalBrowserLoginInput): Promise<ExternalBrowserLoginStartResult>;
 }
 
 export abstract class BasePlatformAdapter implements PlatformAdapter {

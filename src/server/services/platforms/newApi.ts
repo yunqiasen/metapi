@@ -8,6 +8,8 @@ import {
   CreateApiTokenOptions,
   type ExternalAuthLoginInput,
   type ExternalAuthLoginResult,
+  type ExternalBrowserLoginInput,
+  type ExternalBrowserLoginStartResult,
   type SiteAnnouncement,
 } from './base.js';
 import type { RequestInit as UndiciRequestInit } from 'undici';
@@ -17,6 +19,22 @@ import { fetchJsonWithShieldCookieRetry } from './newApiShield.js';
 
 export class NewApiAdapter extends BasePlatformAdapter {
   readonly platformName: string = 'new-api';
+
+  async startExternalBrowserLogin(
+    baseUrl: string,
+    input: ExternalBrowserLoginInput,
+  ): Promise<ExternalBrowserLoginStartResult> {
+    const targetSiteUrl = baseUrl.trim().replace(/\/+$/, '');
+    if (!targetSiteUrl) {
+      throw new Error('target site URL is required');
+    }
+    return {
+      sourceProvider: input.sourceProvider,
+      targetSiteUrl,
+      authorizationUrl: new URL('/login', `${targetSiteUrl}/`).toString(),
+      completionMode: 'target_site_session',
+    };
+  }
 
   async detect(url: string): Promise<boolean> {
     try {

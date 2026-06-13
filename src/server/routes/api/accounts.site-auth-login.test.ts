@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const externalAuthLoginMock = vi.fn();
+const startExternalBrowserLoginMock = vi.fn();
 const verifyTokenMock = vi.fn();
 const getApiTokensMock = vi.fn();
 
@@ -12,6 +13,7 @@ vi.mock('../../services/platforms/index.js', () => ({
   getAdapter: () => ({
     platformName: 'new-api',
     externalAuthLogin: (...args: unknown[]) => externalAuthLoginMock(...args),
+    startExternalBrowserLogin: (...args: unknown[]) => startExternalBrowserLoginMock(...args),
     verifyToken: (...args: unknown[]) => verifyTokenMock(...args),
     getApiTokens: (...args: unknown[]) => getApiTokensMock(...args),
   }),
@@ -45,6 +47,7 @@ describe('accounts site auth login', () => {
 
   beforeEach(async () => {
     externalAuthLoginMock.mockReset();
+    startExternalBrowserLoginMock.mockReset();
     verifyTokenMock.mockReset();
     getApiTokensMock.mockReset();
     getApiTokensMock.mockResolvedValue([]);
@@ -59,6 +62,44 @@ describe('accounts site auth login', () => {
     await db.delete(schema.accounts).run();
     await db.delete(schema.siteAuthCredentials).run();
     await db.delete(schema.sites).run();
+  });
+
+  it('starts a target-site browser login without requiring a saved GitHub credential', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'GitHub Target',
+      url: 'https://target.example.com',
+      platform: 'new-api',
+      status: 'active',
+    }).returning().get();
+    startExternalBrowserLoginMock.mockResolvedValueOnce({
+      sourceProvider: 'github',
+      authorizationUrl: 'https://target.example.com/login',
+      targetSiteUrl: 'https://target.example.com',
+      completionMode: 'target_site_session',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/site-auth-browser-login/start',
+      payload: {
+        siteId: site.id,
+        provider: 'github',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(startExternalBrowserLoginMock).toHaveBeenCalledWith('https://target.example.com', {
+      sourceProvider: 'github',
+    });
+    expect(response.json()).toMatchObject({
+      success: true,
+      siteId: site.id,
+      provider: 'github',
+      authorizationUrl: 'https://target.example.com/login',
+      instructions: {
+        mode: 'target_site_browser_login',
+      },
+    });
   });
 
   afterAll(async () => {

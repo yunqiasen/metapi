@@ -645,6 +645,20 @@ describe('NewApiAdapter', () => {
     ).toBe(true);
   });
 
+  it('opens the NewAPI target login page for provider browser login', async () => {
+    const adapter = new NewApiAdapter();
+    const result = await adapter.startExternalBrowserLogin?.(baseUrl + '/', {
+      sourceProvider: 'github',
+    });
+
+    expect(result).toEqual({
+      sourceProvider: 'github',
+      targetSiteUrl: baseUrl,
+      authorizationUrl: baseUrl + '/login',
+      completionMode: 'target_site_session',
+    });
+  });
+
   it('detects cookie session values as session cookies for anyrouter-like deployments', async () => {
     const adapter = new NewApiAdapter();
     const result = await adapter.verifyToken(baseUrl, COOKIE_SESSION_TOKEN);

@@ -148,6 +148,8 @@ export default function Accounts() {
     useState<number | null>(null);
   const [siteAuthLoginCredentialId, setSiteAuthLoginCredentialId] =
     useState<number | null>(null);
+  const [siteAuthBrowserLoginProvider, setSiteAuthBrowserLoginProvider] =
+    useState<string | null>(null);
   const [browserCredentialCaptureOpen, setBrowserCredentialCaptureOpen] =
     useState(false);
   const [browserCredentialCaptureText, setBrowserCredentialCaptureText] =
@@ -332,6 +334,33 @@ export default function Accounts() {
     navigate({ pathname: "/oauth", search: `?${params.toString()}` });
   };
 
+  const handleStartSiteAuthBrowserLogin = async (provider: string) => {
+    if (!tokenForm.siteId) {
+      toast.error("请先选择站点");
+      return;
+    }
+    setSiteAuthBrowserLoginProvider(provider);
+    try {
+      const started = await api.startAccountSiteAuthBrowserLogin({
+        siteId: tokenForm.siteId,
+        provider,
+      });
+      if (typeof window !== "undefined" && typeof window.open === "function") {
+        window.open(
+          started.authorizationUrl,
+          `metapi-target-site-auth-${provider}`,
+          "popup=yes,width=980,height=760,noopener,noreferrer",
+        );
+      }
+      toast.success("已打开目标站登录窗口。完成授权后保存该站 Session。");
+      openBrowserCredentialCapture();
+    } catch (error: any) {
+      toast.error(error?.message || "无法打开目标站授权登录");
+    } finally {
+      setSiteAuthBrowserLoginProvider(null);
+    }
+  };
+
   const handleUseSiteAuthCredential = async (credential: SiteAuthCredentialInfo) => {
     if (!tokenForm.siteId) {
       toast.error("请先选择站点");
@@ -405,6 +434,7 @@ export default function Accounts() {
     setSiteAuthRequirementSiteId(null);
     setSiteAuthRequirementsLoading(false);
     setSiteAuthLoginCredentialId(null);
+    setSiteAuthBrowserLoginProvider(null);
     setBrowserCredentialCaptureOpen(false);
     setBrowserCredentialCaptureText("");
     setBrowserCredentialCaptureError("");
@@ -1900,7 +1930,9 @@ export default function Accounts() {
                         siteAuthRequirementSiteId === tokenForm.siteId
                       }
                       loggingInCredentialId={siteAuthLoginCredentialId}
+                      startingProvider={siteAuthBrowserLoginProvider}
                       onAddCredential={handleAddSiteAuthCredential}
+                      onStartBrowserLogin={handleStartSiteAuthBrowserLogin}
                       onUseCredential={handleUseSiteAuthCredential}
                       onOpenBrowserCredentialCapture={openBrowserCredentialCapture}
                       onUseAccountPasswordLogin={handleUseAccountPasswordLogin}

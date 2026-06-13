@@ -142,7 +142,7 @@ describe('Accounts site auth requirements', () => {
         const text = collectText(root.root);
         expect(text).toContain('第三方授权登录');
         expect(text).toContain('检测到该站点支持 LinuxDO 登录');
-        expect(text).toContain('也可以直接输入目标站点账号密码登录');
+        expect(text).toContain('主流程会打开目标站自己的登录窗口');
         expect(text).toContain('自动获取浏览器凭证和 UserID');
       });
     } finally {

@@ -281,14 +281,14 @@ describe('OAuthManagement page', () => {
         expect(text).toContain('Provider 连接列表');
         expect(text).toContain('第三方登录凭证');
         expect(text).toContain('暂无第三方登录凭证');
-        expect(text).toContain('添加 LinuxDO、GitHub 或 Google 凭证后，可在添加 Session 连接时复用。');
+        expect(text).toContain('添加 LinuxDO 凭证或浏览器捕获的目标站 Session 后，可在添加 Session 连接时复用。');
       });
     } finally {
       root?.unmount();
     }
   });
 
-  it('starts third-party login authorization from the new OAuth connection drawer', async () => {
+  it('starts LinuxDO credential authorization from the new OAuth connection drawer', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -298,21 +298,31 @@ describe('OAuthManagement page', () => {
     });
     apiMock.getSiteAuthProviders.mockResolvedValue({
       providers: [
-        { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
-        { provider: 'google', label: 'Google', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
+        { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie'], captureModes: ['oauth_callback'], enabled: true },
       ],
     });
+    apiMock.startSiteAuthProviderAuthorization.mockResolvedValueOnce({
+      provider: 'linuxdo',
+      state: 'site-auth-state-1',
+      authorizationUrl: 'https://linux.do/user-api-key/new?state=site-auth-state-1',
+      instructions: {
+        redirectUri: 'http://metapi.local/api/site-auth/callback/linuxdo',
+        callbackPath: '/api/site-auth/callback/linuxdo',
+        manualCallbackDelayMs: 15000,
+        mode: 'oauth',
+      },
+    });
     apiMock.getSiteAuthAuthorizationSession
-      .mockResolvedValueOnce({ provider: 'github', state: 'site-auth-state-1', status: 'pending' })
+      .mockResolvedValueOnce({ provider: 'linuxdo', state: 'site-auth-state-1', status: 'pending' })
       .mockResolvedValueOnce({
-        provider: 'github',
+        provider: 'linuxdo',
         state: 'site-auth-state-1',
         status: 'success',
         credential: {
           id: 33,
-          provider: 'github',
-          label: 'GitHub 浏览器授权',
-          credentialType: 'oauth_token',
+          provider: 'linuxdo',
+          label: 'LinuxDO 浏览器授权',
+          credentialType: 'cookie',
           status: 'active',
           metadata: {},
         },
@@ -336,17 +346,17 @@ describe('OAuthManagement page', () => {
 
       await clickButton(root!, '授权添加凭证');
       expect(collectText(root.root)).toContain('站点登录授权');
-      expect(collectText(root.root)).toContain('授权并保存 GitHub');
+      expect(collectText(root.root)).toContain('授权并保存 LinuxDO');
 
-      await clickButton(root!, '授权并保存 GitHub');
+      await clickButton(root!, '授权并保存 LinuxDO');
       await vi.waitFor(async () => {
         await flushMicrotasks();
       });
 
-      expect(apiMock.startSiteAuthProviderAuthorization).toHaveBeenCalledWith('github');
+      expect(apiMock.startSiteAuthProviderAuthorization).toHaveBeenCalledWith('linuxdo');
       expect(openMock).toHaveBeenCalledWith(
-        'https://github.com/login/oauth/authorize?state=site-auth-state-1',
-        'oauth-site-auth-github',
+        'https://linux.do/user-api-key/new?state=site-auth-state-1',
+        'oauth-site-auth-linuxdo',
         expect.stringContaining('width=540'),
       );
 
@@ -364,7 +374,7 @@ describe('OAuthManagement page', () => {
     }
   });
 
-  it('opens the site auth authorization drawer from a site-auth provider query', async () => {
+  it('opens the site auth drawer from a Google provider query and points to target-site connection login', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -395,7 +405,7 @@ describe('OAuthManagement page', () => {
         await flushMicrotasks();
         const text = collectText(root!.root);
         expect(text).toContain('站点登录授权');
-        expect(text).toContain('授权并保存 Google');
+        expect(text).toContain('去添加 Session 连接 · Google');
         expect(text).not.toContain('Google Token');
       });
     } finally {

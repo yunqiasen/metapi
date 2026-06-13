@@ -8,7 +8,9 @@ type SiteAuthRequirementPickerProps = {
   data: SiteAuthRequirementsResponse | null;
   loading?: boolean;
   loggingInCredentialId?: number | null;
+  startingProvider?: string | null;
   onAddCredential: (provider: string) => void;
+  onStartBrowserLogin: (provider: string) => void;
   onUseCredential: (credential: SiteAuthCredentialInfo) => void;
   onOpenBrowserCredentialCapture: () => void;
   onUseAccountPasswordLogin: () => void;
@@ -18,7 +20,9 @@ export default function SiteAuthRequirementPicker({
   data,
   loading = false,
   loggingInCredentialId = null,
+  startingProvider = null,
   onAddCredential,
+  onStartBrowserLogin,
   onUseCredential,
   onOpenBrowserCredentialCapture,
   onUseAccountPasswordLogin,
@@ -42,7 +46,7 @@ export default function SiteAuthRequirementPicker({
         <div>
           <div className="site-auth-picker-title">第三方授权登录</div>
           <div className="site-auth-picker-subtitle">
-            检测到该站点支持 {providerLabels} 登录。可以使用 OAuth 管理中保存的凭证，也可以直接输入目标站点账号密码登录。
+            检测到该站点支持 {providerLabels} 登录。主流程会打开目标站自己的登录窗口，复用浏览器里已有的 GitHub / Google / LinuxDO 登录态。
           </div>
         </div>
         <div className="site-auth-picker-toolbar">
@@ -72,6 +76,16 @@ export default function SiteAuthRequirementPicker({
                 <div className="site-auth-provider-reason">{requirement.reason}</div>
               </div>
               <div className="site-auth-provider-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary site-auth-provider-action"
+                  onClick={() => onStartBrowserLogin(requirement.provider)}
+                  disabled={startingProvider === requirement.provider}
+                >
+                  {startingProvider === requirement.provider
+                    ? '打开中...'
+                    : `用 ${requirement.label} 浏览器登录该站点`}
+                </button>
                 {credentials.map((credential) => (
                   <SiteAuthLoginBridge
                     key={credential.id}
@@ -86,7 +100,7 @@ export default function SiteAuthRequirementPicker({
                     className="btn btn-ghost site-auth-provider-action"
                     onClick={() => onAddCredential(requirement.provider)}
                   >
-                    添加 {requirement.label} 凭证
+                    管理已保存 {requirement.label} 凭证
                   </button>
                 ) : null}
               </div>

@@ -14,6 +14,7 @@ const { apiMock } = vi.hoisted(() => ({
     getAccountTokens: vi.fn(),
     getSiteAuthRequirements: vi.fn(),
     createAccountFromSiteAuthCredential: vi.fn(),
+    startAccountSiteAuthBrowserLogin: vi.fn(),
   },
 }));
 
@@ -100,6 +101,13 @@ describe('Accounts site auth login', () => {
       tokenType: 'session',
       credentialMode: 'session',
     });
+    apiMock.startAccountSiteAuthBrowserLogin.mockResolvedValue({
+      success: true,
+      siteId: 31,
+      provider: 'github',
+      authorizationUrl: 'https://target.example.com/login',
+      instructions: { mode: 'target_site_browser_login' },
+    });
   });
 
   afterEach(() => {
@@ -135,6 +143,58 @@ describe('Accounts site auth login', () => {
       });
     } finally {
       root?.unmount();
+    }
+  });
+
+  it('opens target-site GitHub browser login from the add Session connection form', async () => {
+    const openSpy = vi.fn(() => null);
+    vi.stubGlobal('window', { open: openSpy });
+    apiMock.getSiteAuthRequirements.mockResolvedValueOnce({
+      siteId: 31,
+      hasThirdPartyLogin: true,
+      requirements: [
+        {
+          provider: 'github',
+          label: 'GitHub',
+          required: true,
+          confidence: 'detected',
+          reason: 'login page contains this provider',
+          availableCredentials: [],
+        },
+      ],
+    });
+
+    const root = await renderAccountsPage();
+    try {
+      await clickButton(root, '+ 添加连接');
+
+      const selects = root.root.findAllByType(ModernSelect);
+      const siteSelect = selects[1];
+      await act(async () => {
+        siteSelect?.props.onChange('31');
+      });
+      await flushMicrotasks();
+
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root.root)).toContain('用 GitHub 浏览器登录该站点');
+      });
+
+      await clickButton(root, '用 GitHub 浏览器登录该站点');
+
+      expect(apiMock.startAccountSiteAuthBrowserLogin).toHaveBeenCalledWith({
+        siteId: 31,
+        provider: 'github',
+      });
+      expect(openSpy).toHaveBeenCalledWith(
+        'https://target.example.com/login',
+        'metapi-target-site-auth-github',
+        expect.stringContaining('popup=yes'),
+      );
+      expect(collectText(root.root)).not.toContain('添加 GitHub 凭证');
+    } finally {
+      root?.unmount();
+      vi.unstubAllGlobals();
     }
   });
 });

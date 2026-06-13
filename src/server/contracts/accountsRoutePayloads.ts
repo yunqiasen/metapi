@@ -69,6 +69,11 @@ const accountSiteAuthLoginPayloadSchema = z.object({
   skipModelFetch: z.boolean().optional(),
 }).passthrough();
 
+const accountSiteAuthBrowserLoginStartPayloadSchema = z.object({
+  siteId: z.number().int().positive(),
+  provider: z.enum(['linuxdo', 'github', 'google']),
+}).passthrough();
+
 const accountManualModelsPayloadSchema = z.object({
   models: z.array(z.string()).optional(),
 }).passthrough();
@@ -80,6 +85,7 @@ export type AccountLoginPayload = z.output<typeof accountLoginPayloadSchema>;
 export type AccountManualModelsPayload = z.output<typeof accountManualModelsPayloadSchema>;
 export type AccountRebindSessionPayload = z.output<typeof accountRebindSessionPayloadSchema>;
 export type AccountSiteAuthLoginPayload = z.output<typeof accountSiteAuthLoginPayloadSchema>;
+export type AccountSiteAuthBrowserLoginStartPayload = z.output<typeof accountSiteAuthBrowserLoginStartPayloadSchema>;
 export type AccountUpdatePayload = z.output<typeof accountUpdatePayloadSchema>;
 export type AccountVerifyTokenPayload = z.output<typeof accountVerifyTokenPayloadSchema>;
 
@@ -95,6 +101,9 @@ function formatAccountsPayloadError(error: z.ZodError): string {
   }
   if (firstPath === 'credentialId') {
     return 'Invalid credentialId. Expected positive number.';
+  }
+  if (firstPath === 'provider') {
+    return 'Invalid provider. Expected linuxdo/github/google.';
   }
   if (firstPath === 'accessToken') {
     return 'Invalid accessToken. Expected string.';
@@ -212,6 +221,11 @@ export function parseAccountVerifyTokenPayload(input: unknown):
 export function parseAccountSiteAuthLoginPayload(input: unknown):
 { success: true; data: AccountSiteAuthLoginPayload } | { success: false; error: string } {
   return parseAccountsPayload(accountSiteAuthLoginPayloadSchema, input);
+}
+
+export function parseAccountSiteAuthBrowserLoginStartPayload(input: unknown):
+{ success: true; data: AccountSiteAuthBrowserLoginStartPayload } | { success: false; error: string } {
+  return parseAccountsPayload(accountSiteAuthBrowserLoginStartPayloadSchema, input);
 }
 
 export function parseAccountManualModelsPayload(input: unknown):

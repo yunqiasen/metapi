@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import CenteredModal from '../components/CenteredModal.js';
 import ResponsiveFilterPanel from '../components/ResponsiveFilterPanel.js';
 import { MobileCard, MobileField } from '../components/MobileCard.js';
@@ -658,6 +658,7 @@ function SideDrawer({
 
 export default function OAuthManagement() {
   const location = useLocation();
+  const navigate = useNavigate();
   const isMobile = useIsMobile();
   const toast = useToast();
   const createIntentHandledRef = useRef(false);
@@ -666,7 +667,7 @@ export default function OAuthManagement() {
   const [connections, setConnections] = useState<OAuthConnectionInfo[]>([]);
   const [siteAuthProviders, setSiteAuthProviders] = useState<SiteAuthProviderInfo[]>([]);
   const [createConnectionMode, setCreateConnectionMode] = useState<CreateConnectionMode>('oauth');
-  const [selectedSiteAuthProviderKey, setSelectedSiteAuthProviderKey] = useState<SiteAuthImportProvider>('github');
+  const [selectedSiteAuthProviderKey, setSelectedSiteAuthProviderKey] = useState<SiteAuthImportProvider>('linuxdo');
   const [siteAuthCredentials, setSiteAuthCredentials] = useState<SiteAuthCredentialInfo[]>([]);
   const [siteAuthCredentialDecryptability, setSiteAuthCredentialDecryptability] =
     useState<SiteAuthCredentialDecryptabilityResponse | null>(null);
@@ -1149,7 +1150,7 @@ export default function OAuthManagement() {
       label: provider.label,
       description: provider.provider === 'linuxdo'
         ? 'LinuxDO 授权回调后自动保存 Cookie'
-        : 'OAuth 浏览器授权后保存凭证',
+        : '在添加 Session 连接时选择目标站后授权',
     })),
     [siteAuthProviders],
   );
@@ -1261,7 +1262,7 @@ export default function OAuthManagement() {
     setShowColumnMenu(false);
   };
 
-  const openSiteAuthAuthorizationDrawer = (provider: SiteAuthImportProvider = 'github') => {
+  const openSiteAuthAuthorizationDrawer = (provider: SiteAuthImportProvider = 'linuxdo') => {
     setDrawerIntent({ mode: 'create' });
     setCreateConnectionMode('site-auth');
     setSelectedSiteAuthProviderKey(provider);
@@ -1454,6 +1455,11 @@ export default function OAuthManagement() {
   const handleStartSiteAuthAuthorization = async () => {
     const provider = selectedSiteAuthProvider;
     if (!provider) return;
+    if (provider.provider === 'github' || provider.provider === 'google') {
+      setSessionInfo(`${provider.label} 要在添加 Session 连接时选择目标中转站后授权。已打开连接管理。`);
+      navigate('/accounts?segment=session&create=1');
+      return;
+    }
     const actionKey = `site-auth-start:${provider.provider}`;
     setActionLoadingKey(actionKey);
     try {
@@ -2461,7 +2467,7 @@ export default function OAuthManagement() {
           decryptability={siteAuthCredentialDecryptability}
           loaded={loaded}
           onImportCredential={openSiteAuthImportModal}
-          onAuthorizeCredential={() => openSiteAuthAuthorizationDrawer('github')}
+          onAuthorizeCredential={() => openSiteAuthAuthorizationDrawer('linuxdo')}
           onVerifyCredential={handleVerifySiteAuthCredential}
           onDeleteCredential={handleDeleteSiteAuthCredential}
           onLoadTargetSites={handleLoadSiteAuthTargetSites}
@@ -2624,7 +2630,7 @@ export default function OAuthManagement() {
               {drawerIntent.mode === 'create' && createConnectionMode === 'site-auth' ? (
                 <>
                   <div className="oauth-form-note">
-                    这里添加的是用于登录目标中转站的第三方身份，不直接参与 `/v1` 路由。点击授权会打开浏览器小窗，GitHub / Google 授权成功后自动加密保存到右侧凭证池。
+                    LinuxDO 可以在这里保存通用凭证。GitHub / Google 要先选择目标中转站，再从添加 Session 连接里打开该站自己的登录小窗。
                   </div>
                   <button
                     type="button"
@@ -2634,7 +2640,9 @@ export default function OAuthManagement() {
                   >
                     {actionLoadingKey.startsWith('site-auth-start:')
                       ? '启动中...'
-                      : `授权并保存 ${selectedSiteAuthProvider?.label || ''}`.trim()}
+                      : selectedSiteAuthProvider?.provider === 'github' || selectedSiteAuthProvider?.provider === 'google'
+                        ? `去添加 Session 连接 · ${selectedSiteAuthProvider?.label || ''}`.trim()
+                        : `授权并保存 ${selectedSiteAuthProvider?.label || ''}`.trim()}
                   </button>
                 </>
               ) : (

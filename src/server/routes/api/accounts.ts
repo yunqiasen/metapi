@@ -43,6 +43,7 @@ import {
   parseAccountBatchPayload,
   parseAccountCreatePayload,
   parseAccountHealthRefreshPayload,
+  parseAccountSiteAuthBrowserLoginStartPayload,
   parseAccountSiteAuthLoginPayload,
   parseAccountLoginPayload,
   parseAccountManualModelsPayload,
@@ -63,7 +64,7 @@ import {
   getSiteAuthCredential,
   getSiteAuthCredentialPayload,
 } from "../../services/site-auth/credentialVault.js";
-import { resolveSiteAuthLogin, toSafeSiteAuthBridgeError } from "../../services/site-auth/loginBridge.js";
+import { resolveSiteAuthLogin, startSiteAuthBrowserLogin, toSafeSiteAuthBridgeError } from "../../services/site-auth/loginBridge.js";
 
 type AccountWithSiteRow = {
   accounts: typeof schema.accounts.$inferSelect;
@@ -1267,6 +1268,61 @@ export async function accountsRoutes(app: FastifyInstance) {
       };
     },
   );
+
+  app.post<{ Body: unknown }>("/api/accounts/site-auth-browser-login/start", async (request, reply) => {
+    const parsedBody = parseAccountSiteAuthBrowserLoginStartPayload(request.body);
+    if (!parsedBody.success) {
+      return reply
+        .code(400)
+        .send({ success: false, message: parsedBody.error });
+    }
+
+    const body = parsedBody.data;
+    const site = await db
+      .select()
+      .from(schema.sites)
+      .where(eq(schema.sites.id, body.siteId))
+      .get();
+    if (!site) {
+      return reply
+        .code(400)
+        .send({ success: false, message: "site not found" });
+    }
+
+    const adapter = getAdapter(site.platform);
+    if (!adapter) {
+      return reply
+        .code(400)
+        .send({
+          success: false,
+          message: `platform not supported: ${site.platform}`,
+        });
+    }
+
+    try {
+      const started = await startSiteAuthBrowserLogin({
+        site,
+        adapter,
+        provider: body.provider,
+      });
+      return {
+        success: true,
+        siteId: body.siteId,
+        provider: body.provider,
+        authorizationUrl: started.authorizationUrl,
+        targetSiteUrl: started.targetSiteUrl,
+        instructions: {
+          mode: "target_site_browser_login",
+          completionMode: started.completionMode,
+        },
+      };
+    } catch (error: any) {
+      return reply.code(400).send({
+        success: false,
+        message: error?.message || "target site browser login start failed",
+      });
+    }
+  });
 
   app.post<{ Body: unknown }>("/api/accounts/site-auth-login", async (request, reply) => {
     const parsedBody = parseAccountSiteAuthLoginPayload(request.body);

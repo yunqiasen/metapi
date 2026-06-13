@@ -79,22 +79,11 @@ The check requires `AUTH_TOKEN` in the container environment. It verifies the UI
 Use `Provider 与登录凭证` for two separate things:
 
 - Provider connections: routeable OAuth providers such as Codex, Claude, Gemini CLI, and Antigravity.
-- Third-party login credentials: reusable login material for target sites, currently LinuxDO Cookie plus GitHub / Google browser authorization credentials.
+- Third-party login credentials: reusable login material for target sites, currently LinuxDO Cookie plus target-site Session material captured after browser login.
 
-GitHub and Google are added from `新建 OAuth 连接 -> 站点登录授权`. The page opens a popup, receives the provider callback at `/api/site-auth/callback/:provider`, exchanges the code server-side, and stores the encrypted credential payload in the local database.
+GitHub and Google target-site login starts from `连接管理 -> 添加 Session 连接`: select the target site, then click `用 GitHub/Google 浏览器登录该站点`. This opens the target station's own login page so the browser can reuse the already logged-in GitHub/Google identity. The resulting target-site Session is then saved through the browser credential capture flow.
 
-Set these variables in `.env` before using GitHub / Google popup authorization:
-
-```bash
-SITE_AUTH_GITHUB_CLIENT_ID=
-SITE_AUTH_GITHUB_CLIENT_SECRET=
-SITE_AUTH_GOOGLE_CLIENT_ID=
-SITE_AUTH_GOOGLE_CLIENT_SECRET=
-```
-
-Register callback URLs on the OAuth app side for every deployment host that operators use, for example `http://100.126.43.55:4000/api/site-auth/callback/github` and `http://100.126.43.55:4000/api/site-auth/callback/google`.
-
-Adding a Session connection can query the selected site's login requirements and reuse saved third-party credentials to create a normal Session account. LinuxDO browser-assisted import only parses text the operator pastes manually; it does not read browser HttpOnly Cookies.
+Adding a Session connection can query the selected site's login requirements, open the target station's browser login, or reuse saved third-party credentials to create a normal Session account. Browser-assisted import only parses text the operator pastes manually; it does not read cross-site HttpOnly Cookies.
 
 ## Update from upstream
 

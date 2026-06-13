@@ -884,6 +884,23 @@ export type CreateAccountFromSiteAuthCredentialRequest = {
   username?: string;
 };
 
+export type StartAccountSiteAuthBrowserLoginRequest = {
+  siteId: number;
+  provider: string;
+};
+
+export type StartAccountSiteAuthBrowserLoginResponse = {
+  success: boolean;
+  siteId: number;
+  provider: string;
+  authorizationUrl: string;
+  targetSiteUrl?: string;
+  instructions?: {
+    mode?: string;
+    completionMode?: string;
+  };
+};
+
 export type DownstreamApiKeyTrendBucket = {
   startUtc: string | null;
   totalRequests: number;
@@ -1389,6 +1406,11 @@ export const api = {
       body: JSON.stringify(data),
       timeoutMs: 45_000,
     }),
+  startAccountSiteAuthBrowserLogin: (data: StartAccountSiteAuthBrowserLoginRequest) =>
+    request("/api/accounts/site-auth-browser-login/start", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }) as Promise<StartAccountSiteAuthBrowserLoginResponse>,
 
   // Events
   getEvents: (params?: string) =>

@@ -1,4 +1,5 @@
 import type {
+  ExternalBrowserLoginStartResult,
   ExternalAuthLoginResult,
   PlatformAdapter,
 } from '../platforms/base.js';
@@ -18,6 +19,12 @@ export type ResolveSiteAuthLoginInput = {
   site: SiteAuthLoginSiteInput;
   adapter: PlatformAdapter;
   credential: SiteAuthLoginCredentialInput;
+};
+
+export type StartSiteAuthBrowserLoginInput = {
+  site: SiteAuthLoginSiteInput;
+  adapter: PlatformAdapter;
+  provider: SiteAuthProviderId;
 };
 
 function normalizeSiteUrl(site: SiteAuthLoginSiteInput): string {
@@ -59,5 +66,28 @@ export async function resolveSiteAuthLogin({
   return {
     ...result,
     accessToken,
+  };
+}
+
+export async function startSiteAuthBrowserLogin({
+  site,
+  adapter,
+  provider,
+}: StartSiteAuthBrowserLoginInput): Promise<ExternalBrowserLoginStartResult> {
+  if (typeof adapter.startExternalBrowserLogin !== 'function') {
+    throw new Error('target site does not support browser third-party login');
+  }
+  const result = await adapter.startExternalBrowserLogin(normalizeSiteUrl(site), {
+    sourceProvider: provider,
+  });
+  const authorizationUrl = typeof result.authorizationUrl === 'string'
+    ? result.authorizationUrl.trim()
+    : '';
+  if (!authorizationUrl) {
+    throw new Error('target site browser login did not return an authorization URL');
+  }
+  return {
+    ...result,
+    authorizationUrl,
   };
 }

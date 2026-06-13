@@ -95,22 +95,202 @@ describe('site auth routes', () => {
     });
   });
 
-  it('rejects legacy provider authorization starts in favor of target-site session capture', async () => {
-    const githubStartResponse = await app.inject({
+  it('starts GitHub site-auth OAuth and stores the pending session', async () => {
+    const response = await app.inject({
       method: 'POST',
       url: '/api/site-auth/providers/github/start',
       headers: { origin: 'http://metapi.local' },
     });
-    const linuxDoStartResponse = await app.inject({
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body).toMatchObject({
+      provider: 'github',
+      instructions: {
+        redirectUri: 'http://metapi.local/api/site-auth/callback/github',
+        callbackPath: '/api/site-auth/callback/github',
+        mode: 'oauth',
+      },
+    });
+    const authorizationUrl = new URL(body.authorizationUrl);
+    expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe('https://github.com/login/oauth/authorize');
+    expect(authorizationUrl.searchParams.get('client_id')).toBe('github-client-id');
+    expect(authorizationUrl.searchParams.get('redirect_uri')).toBe('http://metapi.local/api/site-auth/callback/github');
+    expect(authorizationUrl.searchParams.get('state')).toBe(body.state);
+    expect(authorizationUrl.searchParams.get('scope')).toContain('user:email');
+  });
+
+  it('exchanges a GitHub callback code and automatically saves the credential', async () => {
+    const startResponse = await app.inject({
+      method: 'POST',
+      url: '/api/site-auth/providers/github/start',
+      headers: { origin: 'http://metapi.local' },
+    });
+    const state = startResponse.json().state;
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'github-oauth-token',
+          token_type: 'bearer',
+          scope: 'read:user,user:email',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 12345,
+          login: 'octocat',
+          email: null,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ([
+          { email: 'octocat@example.com', primary: true, verified: true },
+        ]),
+      });
+
+    const callbackResponse = await app.inject({
+      method: 'GET',
+      url: `/api/site-auth/callback/github?state=${encodeURIComponent(state)}&code=github-code`,
+    });
+
+    expect(callbackResponse.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://github.com/login/oauth/access_token',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://api.github.com/user',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer github-oauth-token' }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      'https://api.github.com/user/emails?per_page=100',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer github-oauth-token' }),
+      }),
+    );
+
+    const sessionResponse = await app.inject({ method: 'GET', url: `/api/site-auth/sessions/${state}` });
+    expect(sessionResponse.json()).toMatchObject({
+      provider: 'github',
+      state,
+      status: 'success',
+      credential: {
+        provider: 'github',
+        label: 'GitHub · octocat',
+        credentialType: 'oauth_token',
+        subject: '12345',
+        username: 'octocat',
+        email: 'octocat@example.com',
+        metadata: { source: 'provider-oauth-callback' },
+      },
+    });
+    const payload = await vault.getSiteAuthCredentialPayload(sessionResponse.json().credential.id);
+    expect(payload).toMatchObject({
+      accessToken: 'github-oauth-token',
+      tokenType: 'bearer',
+      scope: 'read:user,user:email',
+    });
+  });
+
+  it('exchanges a Google callback code and automatically saves the credential', async () => {
+    const startResponse = await app.inject({
+      method: 'POST',
+      url: '/api/site-auth/providers/google/start',
+      headers: { origin: 'http://metapi.local' },
+    });
+    expect(startResponse.statusCode).toBe(200);
+    const state = startResponse.json().state;
+    const authorizationUrl = new URL(startResponse.json().authorizationUrl);
+    expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe('https://accounts.google.com/o/oauth2/v2/auth');
+    expect(authorizationUrl.searchParams.get('client_id')).toBe('google-client-id');
+    expect(authorizationUrl.searchParams.get('redirect_uri')).toBe('http://metapi.local/api/site-auth/callback/google');
+    expect(authorizationUrl.searchParams.get('scope')).toContain('openid');
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'google-oauth-token',
+          refresh_token: 'google-refresh-token',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          scope: 'openid email profile',
+          id_token: 'google-id-token',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          sub: 'google-sub-123',
+          name: 'Google User',
+          email: 'google-user@example.com',
+        }),
+      });
+
+    const callbackResponse = await app.inject({
+      method: 'GET',
+      url: `/api/site-auth/callback/google?state=${encodeURIComponent(state)}&code=google-code`,
+    });
+
+    expect(callbackResponse.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://oauth2.googleapis.com/token',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://www.googleapis.com/oauth2/v3/userinfo',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer google-oauth-token' }),
+      }),
+    );
+    const sessionResponse = await app.inject({ method: 'GET', url: `/api/site-auth/sessions/${state}` });
+    expect(sessionResponse.json()).toMatchObject({
+      provider: 'google',
+      state,
+      status: 'success',
+      credential: {
+        provider: 'google',
+        label: 'Google · Google User',
+        credentialType: 'oauth_token',
+        subject: 'google-sub-123',
+        username: 'Google User',
+        email: 'google-user@example.com',
+        metadata: { source: 'provider-oauth-callback' },
+      },
+    });
+    const payload = await vault.getSiteAuthCredentialPayload(sessionResponse.json().credential.id);
+    expect(payload).toMatchObject({
+      accessToken: 'google-oauth-token',
+      refreshToken: 'google-refresh-token',
+      idToken: 'google-id-token',
+      expiresIn: 3600,
+    });
+  });
+
+  it('rejects LinuxDO OAuth starts when no callback OAuth flow is configured', async () => {
+    const response = await app.inject({
       method: 'POST',
       url: '/api/site-auth/providers/linuxdo/start',
       headers: { origin: 'http://metapi.local' },
     });
 
-    expect(githubStartResponse.statusCode).toBe(400);
-    expect(linuxDoStartResponse.statusCode).toBe(400);
-    expect(githubStartResponse.body).toContain('target-site session capture');
-    expect(linuxDoStartResponse.body).toContain('target-site session capture');
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain('LinuxDO automatic OAuth is not configured');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

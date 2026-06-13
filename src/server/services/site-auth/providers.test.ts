@@ -32,14 +32,14 @@ describe('site auth provider registry', () => {
     expect(getSiteAuthProviderDefinition('unknown')).toBeUndefined();
   });
 
-  it('keeps GitHub and Google as target-site session artifacts instead of official OAuth tokens', () => {
+  it('supports GitHub and Google OAuth callback credentials plus browser session artifacts', () => {
     expect(getSiteAuthProviderDefinition('github')?.metadata).toMatchObject({
-      credentialTypes: ['session_artifact'],
-      captureModes: ['browser_assisted'],
+      credentialTypes: ['oauth_token', 'session_artifact'],
+      captureModes: ['oauth_callback', 'browser_assisted'],
     });
     expect(getSiteAuthProviderDefinition('google')?.metadata).toMatchObject({
-      credentialTypes: ['session_artifact'],
-      captureModes: ['browser_assisted'],
+      credentialTypes: ['oauth_token', 'session_artifact'],
+      captureModes: ['oauth_callback', 'browser_assisted'],
     });
   });
 });

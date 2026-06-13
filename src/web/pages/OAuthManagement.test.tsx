@@ -76,9 +76,9 @@ function findButtonContaining(root: WebTestRenderer, label: string) {
   ));
 }
 
-function findLink(root: WebTestRenderer, label: string) {
+function findAction(root: WebTestRenderer, label: string) {
   return root.root.find((node) => (
-    node.type === 'a'
+    (node.type === 'a' || node.type === 'button')
     && typeof node.props.onClick === 'function'
     && collectText(node).trim() === label
   ));
@@ -128,7 +128,7 @@ async function clickButtonContaining(root: WebTestRenderer, label: string) {
 }
 
 async function clickLink(root: WebTestRenderer, label: string) {
-  const link = findLink(root, label);
+  const link = findAction(root, label);
   await act(async () => {
     await link.props.onClick({ preventDefault: vi.fn() });
   });
@@ -330,7 +330,7 @@ describe('OAuthManagement page', () => {
     }
   });
 
-  it('uses a native provider login link without requiring a target relay site', async () => {
+  it('starts provider OAuth authorization and waits for automatic credential save', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -340,15 +340,26 @@ describe('OAuthManagement page', () => {
     });
     apiMock.getSiteAuthProviders.mockResolvedValue({
       providers: [
-        { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+        { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token', 'session_artifact'], captureModes: ['oauth_callback', 'browser_assisted'], enabled: true },
       ],
+    });
+    apiMock.startSiteAuthProviderAuthorization.mockResolvedValueOnce({
+      provider: 'github',
+      state: 'site-auth-state-1',
+      authorizationUrl: 'https://github.com/login/oauth/authorize?state=site-auth-state-1',
+      instructions: {
+        redirectUri: 'http://metapi.local/api/site-auth/callback/github',
+        callbackPath: '/api/site-auth/callback/github',
+        manualCallbackDelayMs: 15000,
+        mode: 'oauth',
+      },
     });
     let root!: WebTestRenderer;
     try {
       await act(async () => {
         root = create(
           <ToastProvider>
-            <MemoryRouter>
+            <MemoryRouter initialEntries={['/oauth?siteAuthProvider=github']}>
               <OAuthManagement />
             </MemoryRouter>
           </ToastProvider>,
@@ -359,25 +370,71 @@ describe('OAuthManagement page', () => {
         expect(collectText(root!.root)).toContain('授权添加凭证');
       });
 
-      await clickButton(root!, '授权添加凭证');
-      const startLink = findLink(root!, '打开 LinuxDO 登录并保存凭证');
-      expect(startLink.props.href).toBe('https://linux.do/');
-      expect(startLink.props.target).toBe('_blank');
+      const startLink = findAction(root!, '授权 GitHub 并自动保存');
+      expect(startLink.type).toBe('button');
       expect(() => root.root.findByProps({ 'data-testid': 'site-auth-target-site-select' })).toThrow();
       const preventDefaultMock = vi.fn();
       await act(async () => {
-        void startLink.props.onClick({ preventDefault: preventDefaultMock });
-        await Promise.resolve();
+        await startLink.props.onClick({ preventDefault: preventDefaultMock });
       });
+      await flushMicrotasks();
 
       expect(preventDefaultMock).toHaveBeenCalled();
-      expect(openMock).toHaveBeenCalledWith('https://linux.do/', '_blank', expect.stringContaining('noopener'));
+      expect(apiMock.startSiteAuthProviderAuthorization).toHaveBeenCalledWith('github');
+      expect(openMock).toHaveBeenCalledWith(
+        'https://github.com/login/oauth/authorize?state=site-auth-state-1',
+        'oauth-github',
+        expect.stringContaining('noopener'),
+      );
       expect(apiMock.startAccountSiteAuthBrowserLogin).not.toHaveBeenCalled();
-      expect(collectText(root.root)).toContain('保存 LinuxDO 登录凭证');
+      expect(root.root.findAll((node) => node.type === 'textarea' && node.props['data-site-auth-browser-capture'] === 'text')).toHaveLength(0);
+      expect(collectText(root.root)).toContain('等待第三方登录授权完成');
     } finally {
       root?.unmount();
     }
   });
+
+  it('shows provider OAuth configuration errors instead of opening an empty popup', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({
+      providers: [
+        { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
+      ],
+    });
+    apiMock.startSiteAuthProviderAuthorization.mockRejectedValueOnce(
+      new Error('GitHub site-auth OAuth is not configured: set SITE_AUTH_GITHUB_CLIENT_ID and SITE_AUTH_GITHUB_CLIENT_SECRET'),
+    );
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter initialEntries={['/oauth?siteAuthProvider=github']}>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('授权 GitHub 并自动保存');
+      });
+
+      await clickLink(root!, '授权 GitHub 并自动保存');
+
+      expect(openMock).not.toHaveBeenCalled();
+      expect(collectText(root.root)).toContain('GitHub site-auth OAuth is not configured');
+    } finally {
+      root?.unmount();
+    }
+  });
+
 
   it('does not list relay target sites when saving GitHub or Google login credentials', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
@@ -414,94 +471,10 @@ describe('OAuthManagement page', () => {
         expect(collectText(root!.root)).toContain('站点登录授权');
       });
 
-      const startLink = findLink(root!, '打开 GitHub 登录并保存凭证');
-      expect(startLink.props.href).toBe('https://github.com/login');
+      const startLink = findAction(root!, '授权 GitHub 并自动保存');
+      expect(startLink.type).toBe('button');
       expect(collectText(root.root)).not.toContain('哈基米');
       expect(() => root.root.findByProps({ 'data-testid': 'site-auth-target-site-select' })).toThrow();
-    } finally {
-      root?.unmount();
-    }
-  });
-
-  it('starts LinuxDO provider browser login and saves the captured credential from the drawer', async () => {
-    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
-    apiMock.getOAuthConnections.mockResolvedValue({
-      items: [],
-      total: 0,
-      limit: 100,
-      offset: 0,
-    });
-    apiMock.getSiteAuthProviders.mockResolvedValue({
-      providers: [
-        { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie', 'session_artifact'], captureModes: ['browser_assisted'], enabled: true },
-      ],
-    });
-    let root!: WebTestRenderer;
-    try {
-      await act(async () => {
-        root = create(
-          <ToastProvider>
-            <MemoryRouter>
-              <OAuthManagement />
-            </MemoryRouter>
-          </ToastProvider>,
-        );
-      });
-      await vi.waitFor(async () => {
-        await flushMicrotasks();
-        expect(collectText(root!.root)).toContain('授权添加凭证');
-      });
-
-      await clickButton(root!, '授权添加凭证');
-      expect(collectText(root.root)).toContain('站点登录授权');
-      expect(collectText(root.root)).toContain('打开 LinuxDO 登录并保存凭证');
-      expect(collectText(root.root)).toContain('保存 LinuxDO / GitHub / Google 的网页登录凭证');
-
-      await clickLink(root!, '打开 LinuxDO 登录并保存凭证');
-      await vi.waitFor(async () => {
-        await flushMicrotasks();
-      });
-
-      expect(apiMock.startAccountSiteAuthBrowserLogin).not.toHaveBeenCalled();
-      expect(apiMock.startSiteAuthProviderAuthorization).not.toHaveBeenCalled();
-      expect(apiMock.getSiteAuthAuthorizationSession).not.toHaveBeenCalled();
-      expect(openMock).toHaveBeenCalledWith('https://linux.do/', '_blank', expect.stringContaining('noopener'));
-      expect(openMock).not.toHaveBeenCalledWith(
-        expect.stringContaining('linux.do/user-api-key/new'),
-        expect.anything(),
-        expect.anything(),
-      );
-
-      const captureInput = root.root.find((node) => node.type === 'textarea' && node.props['data-site-auth-browser-capture'] === 'text');
-      await act(async () => {
-        captureInput.props.onChange({
-          target: {
-            value: JSON.stringify({
-              accessToken: 'target-session-token',
-              userId: 1234,
-              username: 'target-user',
-            }),
-          },
-        });
-      });
-      await clickButton(root!, '保存持久凭证');
-
-      expect(apiMock.importSiteAuthCredential).toHaveBeenCalledWith({
-        provider: 'linuxdo',
-        label: 'LinuxDO · target-user',
-        credentialType: 'session_artifact',
-        subject: '1234',
-        username: 'target-user',
-        payload: {
-          accessToken: 'target-session-token',
-          platformUserId: '1234',
-          username: 'target-user',
-        },
-        metadata: {
-          source: 'provider-browser-login',
-          providerLoginUrl: 'https://linux.do/',
-        },
-      });
     } finally {
       root?.unmount();
     }
@@ -538,7 +511,7 @@ describe('OAuthManagement page', () => {
         await flushMicrotasks();
         const text = collectText(root!.root);
         expect(text).toContain('站点登录授权');
-        expect(text).toContain('打开 Google 登录并保存凭证');
+        expect(text).toContain('授权 Google 并自动保存');
         expect(text).not.toContain('去连接管理');
         expect(text).not.toContain('Google Token');
       });

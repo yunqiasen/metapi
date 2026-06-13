@@ -1123,16 +1123,22 @@ export default function OAuthManagement() {
           return;
         }
         if (session.status === 'success') {
-          setSessionSuccess(`${session.credential?.label || '第三方登录凭证'} 已保存`);
+          const message = `${session.credential?.label || '第三方登录凭证'} 已保存`;
+          setSessionSuccess(message);
+          toast.success(message);
           await loadSiteAuthCredentials();
           setActiveSiteAuthSession(null);
           return;
         }
-        setSessionError(`第三方登录授权失败：${session.error || '未知错误'}`);
+        const message = `第三方登录授权失败：${session.error || '未知错误'}`;
+        setSessionError(message);
+        toast.error(message);
         setActiveSiteAuthSession(null);
       } catch (error: any) {
         if (cancelled) return;
-        setSessionError(error?.message || '第三方登录授权状态查询失败');
+        const message = error?.message || '第三方登录授权状态查询失败';
+        setSessionError(message);
+        toast.error(message);
         setActiveSiteAuthSession(null);
       }
     };
@@ -1142,7 +1148,7 @@ export default function OAuthManagement() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [activeSiteAuthSession, loadSiteAuthCredentials]);
+  }, [activeSiteAuthSession, loadSiteAuthCredentials, toast]);
 
   useEffect(() => {
     if (!activeSession) {
@@ -1535,40 +1541,31 @@ export default function OAuthManagement() {
   };
 
   const handleStartSiteAuthAuthorization = async (event?: { preventDefault?: () => void }) => {
+    event?.preventDefault?.();
     const provider = selectedSiteAuthProvider;
     if (!provider || actionLoadingKey.startsWith('site-auth-browser-start:')) {
-      event?.preventDefault?.();
-      return;
-    }
-    if (!selectedSiteAuthProviderLoginUrl) {
-      event?.preventDefault?.();
-      setSessionError('当前 Provider 缺少登录地址');
       return;
     }
     const providerLabel = resolveSiteAuthProviderLabel(provider.provider) || provider.label;
-    event?.preventDefault?.();
-    if (typeof window !== 'undefined' && typeof window.open === 'function') {
-      const popup = window.open(
-        selectedSiteAuthProviderLoginUrl,
-        '_blank',
-        `${OAUTH_POPUP_FEATURES},noopener,noreferrer`,
-      );
-      if (popup) {
-        try {
-          popup.opener = null;
-        } catch {}
-        if (typeof popup.focus === 'function') popup.focus();
-      }
+    const actionKey = `site-auth-browser-start:${provider.provider}`;
+    setActionLoadingKey(actionKey);
+    try {
+      const started = await api.startSiteAuthProviderAuthorization(provider.provider);
+      setActiveSiteAuthSession({
+        provider: started.provider,
+        state: started.state,
+        authorizationUrl: started.authorizationUrl,
+        instructions: started.instructions,
+      });
+      setSessionInfo(`等待 ${providerLabel} 授权完成`);
+      openOAuthPopup(provider.provider, started.authorizationUrl);
+    } catch (error: any) {
+      const message = error?.message || `无法启动 ${providerLabel} 授权`;
+      setSessionError(message);
+      toast.error(message);
+    } finally {
+      setActionLoadingKey('');
     }
-    setSiteAuthBrowserCaptureContext({
-      provider: provider.provider,
-      providerLabel,
-      providerLoginUrl: selectedSiteAuthProviderLoginUrl,
-    });
-    setSiteAuthBrowserCaptureText('');
-    setSiteAuthBrowserCaptureError('');
-    setSiteAuthBrowserCaptureOpen(true);
-    setSessionInfo(`已打开 ${providerLabel} 登录页。登录完成后在这里保存 ${providerLabel} 网页登录凭证。`);
   };
 
   const handleSubmitManualCallback = async () => {
@@ -2778,21 +2775,20 @@ export default function OAuthManagement() {
               {drawerIntent.mode === 'create' && createConnectionMode === 'site-auth' ? (
                 <>
                   <div className="oauth-form-note">
-                    保存 LinuxDO / GitHub / Google 的网页登录凭证。这里不选择任何中转站，也不保存官方 API Key。
+                    通过 LinuxDO / GitHub / Google 官方授权页保存登录凭证。这里不选择任何中转站，也不保存官方 API Key。
                   </div>
-                  <a
-                    className={`btn btn-primary ${(!selectedSiteAuthProvider || !selectedSiteAuthProviderLoginUrl || actionLoadingKey.startsWith('site-auth-browser-start:')) ? 'is-disabled' : ''}`.trim()}
-                    href={selectedSiteAuthProviderLoginUrl || '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    className={`btn btn-primary ${(!selectedSiteAuthProvider || actionLoadingKey.startsWith('site-auth-browser-start:')) ? 'is-disabled' : ''}`.trim()}
                     data-testid="site-auth-target-login-link"
-                    aria-disabled={!selectedSiteAuthProvider || !selectedSiteAuthProviderLoginUrl || actionLoadingKey.startsWith('site-auth-browser-start:')}
+                    aria-disabled={!selectedSiteAuthProvider || actionLoadingKey.startsWith('site-auth-browser-start:')}
+                    disabled={!selectedSiteAuthProvider || actionLoadingKey.startsWith('site-auth-browser-start:')}
                     onClick={handleStartSiteAuthAuthorization}
                   >
                     {actionLoadingKey.startsWith('site-auth-browser-start:')
                       ? '启动中...'
-                      : `打开 ${selectedSiteAuthProvider?.label || ''} 登录并保存凭证`.trim()}
-                  </a>
+                      : `授权 ${selectedSiteAuthProvider?.label || ''} 并自动保存`.trim()}
+                  </button>
                 </>
               ) : (
                 <>

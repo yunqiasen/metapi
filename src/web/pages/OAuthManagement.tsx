@@ -24,6 +24,7 @@ import {
   browserSessionCredentialCaptureScript,
   parseBrowserSessionCredentialCapture,
 } from './helpers/browserSessionCredential.js';
+import { normalizePlatformAlias } from '../../shared/platformIdentity.js';
 import {
   api,
   type OAuthConnectionInfo,
@@ -43,6 +44,7 @@ import {
 const POLL_INTERVAL_MS = 1500;
 const CONNECTION_PAGE_LIMIT = 200;
 const AUTO_REFRESH_OPTIONS = [0, 5, 10, 15, 30] as const;
+const SITE_AUTH_BROWSER_LOGIN_PLATFORMS = new Set(['new-api', 'anyrouter']);
 
 type SiteAuthImportProvider = 'linuxdo' | 'github' | 'google';
 type CreateConnectionMode = 'oauth' | 'site-auth';
@@ -198,6 +200,33 @@ function resolveTargetSiteLoginUrl(site: any): string {
   } catch {
     return `${baseUrl}/login`;
   }
+}
+
+function supportsSiteAuthBrowserLogin(site: any): boolean {
+  const id = Number(site?.id);
+  const platform = normalizePlatformAlias(site?.platform);
+  return Number.isInteger(id)
+    && id > 0
+    && Boolean(asTrimmedString(site?.url))
+    && SITE_AUTH_BROWSER_LOGIN_PLATFORMS.has(platform);
+}
+
+function getSiteAuthBrowserLoginPriority(site: any): number {
+  const platform = normalizePlatformAlias(site?.platform);
+  if (platform === 'new-api') return 0;
+  if (platform === 'anyrouter') return 1;
+  return 99;
+}
+
+function listSiteAuthBrowserLoginTargets(sites: any[]): any[] {
+  return sites
+    .filter(supportsSiteAuthBrowserLogin)
+    .map((site, index) => ({ site, index }))
+    .sort((left, right) => (
+      getSiteAuthBrowserLoginPriority(left.site) - getSiteAuthBrowserLoginPriority(right.site)
+      || left.index - right.index
+    ))
+    .map((item) => item.site);
 }
 
 function asTrimmedString(value: string | null | undefined): string {
@@ -890,8 +919,9 @@ export default function OAuthManagement() {
       setSiteAuthProviders(nextSiteAuthProviders);
       setSelectedProviderKey((current) => current || nextProviders[0]?.provider || '');
       setSelectedSiteAuthTargetSiteId((current) => {
-        if (current && nextSites.some((site: any) => String(site?.id || '') === current)) return current;
-        return nextSites[0]?.id ? String(nextSites[0].id) : '';
+        const nextSiteAuthTargetSites = listSiteAuthBrowserLoginTargets(nextSites);
+        if (current && nextSiteAuthTargetSites.some((site: any) => String(site?.id || '') === current)) return current;
+        return nextSiteAuthTargetSites[0]?.id ? String(nextSiteAuthTargetSites[0].id) : '';
       });
     } catch (error: any) {
       console.error('failed to load oauth management data', error);
@@ -1223,19 +1253,24 @@ export default function OAuthManagement() {
     return Array.from(seen.entries()).map(([value, label]) => ({ value, label }));
   }, [connections]);
 
+  const siteAuthTargetSites = useMemo(() => (
+    listSiteAuthBrowserLoginTargets(sites)
+  ), [sites]);
+
   const siteAuthTargetSiteOptions = useMemo(() => (
-    sites
-      .filter((site) => Number.isInteger(Number(site?.id)) && Number(site?.id) > 0)
+    siteAuthTargetSites
       .map((site) => ({
         value: String(site.id),
         label: asTrimmedString(site.name) || asTrimmedString(site.url) || `站点 #${site.id}`,
-        description: [site.platform, site.url].filter((value) => typeof value === 'string' && value.trim()).join(' · '),
+        description: [normalizePlatformAlias(site.platform) || site.platform, site.url]
+          .filter((value) => typeof value === 'string' && value.trim())
+          .join(' · '),
       }))
-  ), [sites]);
+  ), [siteAuthTargetSites]);
 
   const selectedSiteAuthTargetSite = useMemo(() => (
-    sites.find((site) => String(site?.id || '') === selectedSiteAuthTargetSiteId) || null
-  ), [selectedSiteAuthTargetSiteId, sites]);
+    siteAuthTargetSites.find((site) => String(site?.id || '') === selectedSiteAuthTargetSiteId) || null
+  ), [selectedSiteAuthTargetSiteId, siteAuthTargetSites]);
 
   const selectedSiteAuthTargetLoginUrl = useMemo(
     () => resolveTargetSiteLoginUrl(selectedSiteAuthTargetSite),
@@ -1570,6 +1605,11 @@ export default function OAuthManagement() {
     if (!Number.isInteger(siteId) || siteId <= 0) {
       event?.preventDefault?.();
       setSessionError('请先选择目标中转站');
+      return;
+    }
+    if (!selectedSiteAuthTargetSite) {
+      event?.preventDefault?.();
+      setSessionError('请选择支持网页登录保存 Session 的目标中转站');
       return;
     }
     if (!selectedSiteAuthTargetLoginUrl) {
@@ -2776,7 +2816,7 @@ export default function OAuthManagement() {
                           onChange={(value) => setSelectedSiteAuthTargetSiteId(String(value || ''))}
                           options={siteAuthTargetSiteOptions}
                           placeholder="选择要登录的目标中转站"
-                          emptyLabel="暂无目标中转站"
+                          emptyLabel="暂无支持网页登录的目标中转站"
                           searchable
                           searchPlaceholder="搜索站点名称或 URL"
                         />

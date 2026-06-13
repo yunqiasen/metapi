@@ -393,6 +393,99 @@ describe('OAuthManagement page', () => {
     }
   });
 
+  it('ignores official API sites when choosing the target-site login link', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({
+      providers: [
+        { provider: 'github', label: 'GitHub', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+        { provider: 'google', label: 'Google', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+      ],
+    });
+    apiMock.getSites.mockResolvedValue([
+      { id: 1, name: 'OpenAI 官方 API', url: 'https://api.openai.com', platform: 'openai', status: 'active' },
+      { id: 31, name: 'L 站目标中转', url: 'https://target.example.com', platform: 'new-api', status: 'active' },
+    ]);
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter initialEntries={['/oauth?siteAuthProvider=github']}>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('站点登录授权');
+      });
+
+      const targetSelect = root.root.findByProps({ 'data-testid': 'site-auth-target-site-select' });
+      expect(targetSelect.props.options).toEqual([
+        expect.objectContaining({
+          value: '31',
+          label: 'L 站目标中转',
+          description: 'new-api · https://target.example.com',
+        }),
+      ]);
+
+      const startLink = findLink(root!, '打开 GitHub 登录并保存凭证');
+      expect(startLink.props.href).toBe('https://target.example.com/login');
+      expect(startLink.props.href).not.toBe('https://api.openai.com/login');
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('prefers New API target sites for browser login defaults', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({
+      providers: [
+        { provider: 'google', label: 'Google', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+      ],
+    });
+    apiMock.getSites.mockResolvedValue([
+      { id: 9, name: 'AnyRouter', url: 'https://anyrouter.top', platform: 'anyrouter', status: 'active' },
+      { id: 10, name: '哈基米', url: 'https://api.gemai.cc', platform: 'new-api', status: 'active' },
+    ]);
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter initialEntries={['/oauth?siteAuthProvider=google']}>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('站点登录授权');
+      });
+
+      const startLink = findLink(root!, '打开 Google 登录并保存凭证');
+      expect(startLink.props.href).toBe('https://api.gemai.cc/login');
+    } finally {
+      root?.unmount();
+    }
+  });
+
   it('starts LinuxDO target-site browser login and saves the captured session from the drawer', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({

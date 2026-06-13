@@ -330,7 +330,7 @@ describe('OAuthManagement page', () => {
     }
   });
 
-  it('does not offer LinuxDO in the automatic OAuth authorization drawer', async () => {
+  it('lists target sites and starts LinuxDO login on the selected relay site', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -358,21 +358,26 @@ describe('OAuthManagement page', () => {
       });
       await vi.waitFor(async () => {
         await flushMicrotasks();
-        expect(collectText(root!.root)).toContain('授权 GitHub 并自动保存');
+        expect(collectText(root!.root)).toContain('打开 L 站目标中转 的 LinuxDO 登录');
       });
 
-      expect(collectText(root.root)).not.toContain('授权 LinuxDO 并自动保存');
-      const providerSelect = root.root.findAllByType(ModernSelect).find((select) => (
-        select.props.placeholder === '选择 GitHub / Google'
+      expect(collectText(root.root)).toContain('目标中转站');
+      expect(collectText(root.root)).toContain('L 站目标中转');
+      const targetSelect = root.root.findAllByType(ModernSelect).find((select) => (
+        select.props.placeholder === '选择 L 站 / NewAPI 中转站'
       ));
-      expect(providerSelect?.props.options.map((option: any) => option.value)).toEqual(['github', 'google']);
+      expect(targetSelect?.props.options.map((option: any) => option.label)).toEqual(['L 站目标中转']);
+      const providerSelect = root.root.findAllByType(ModernSelect).find((select) => (
+        select.props.placeholder === '选择 LinuxDO / GitHub / Google'
+      ));
+      expect(providerSelect?.props.options.map((option: any) => option.value)).toEqual(['linuxdo', 'github', 'google']);
       expect(apiMock.startSiteAuthProviderAuthorization).not.toHaveBeenCalledWith('linuxdo');
     } finally {
       root?.unmount();
     }
   });
 
-  it('starts provider OAuth authorization and waits for automatic credential save', async () => {
+  it('starts target-site browser login and opens the credential save panel', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -385,16 +390,13 @@ describe('OAuthManagement page', () => {
         { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token', 'session_artifact'], captureModes: ['oauth_callback', 'browser_assisted'], enabled: true },
       ],
     });
-    apiMock.startSiteAuthProviderAuthorization.mockResolvedValueOnce({
+    apiMock.startAccountSiteAuthBrowserLogin.mockResolvedValueOnce({
+      success: true,
+      siteId: 31,
       provider: 'github',
-      state: 'site-auth-state-1',
-      authorizationUrl: 'https://github.com/login/oauth/authorize?state=site-auth-state-1',
-      instructions: {
-        redirectUri: 'http://metapi.local/api/site-auth/callback/github',
-        callbackPath: '/api/site-auth/callback/github',
-        manualCallbackDelayMs: 15000,
-        mode: 'oauth',
-      },
+      authorizationUrl: 'https://target.example.com/login',
+      targetSiteUrl: 'https://target.example.com',
+      instructions: { mode: 'target_site_browser_login', completionMode: 'target_site_session' },
     });
     let root!: WebTestRenderer;
     try {
@@ -409,12 +411,11 @@ describe('OAuthManagement page', () => {
       });
       await vi.waitFor(async () => {
         await flushMicrotasks();
-        expect(collectText(root!.root)).toContain('授权添加凭证');
+        expect(collectText(root!.root)).toContain('打开 L 站目标中转 的 GitHub 登录');
       });
 
-      const startLink = findAction(root!, '授权 GitHub 并自动保存');
+      const startLink = findAction(root!, '打开 L 站目标中转 的 GitHub 登录');
       expect(startLink.type).toBe('button');
-      expect(() => root.root.findByProps({ 'data-testid': 'site-auth-target-site-select' })).toThrow();
       const preventDefaultMock = vi.fn();
       await act(async () => {
         await startLink.props.onClick({ preventDefault: preventDefaultMock });
@@ -422,21 +423,21 @@ describe('OAuthManagement page', () => {
       await flushMicrotasks();
 
       expect(preventDefaultMock).toHaveBeenCalled();
-      expect(apiMock.startSiteAuthProviderAuthorization).toHaveBeenCalledWith('github');
+      expect(apiMock.startAccountSiteAuthBrowserLogin).toHaveBeenCalledWith({ siteId: 31, provider: 'github' });
+      expect(apiMock.startSiteAuthProviderAuthorization).not.toHaveBeenCalled();
       expect(openMock).toHaveBeenCalledWith(
-        'https://github.com/login/oauth/authorize?state=site-auth-state-1',
+        'https://target.example.com/login',
         'oauth-github',
         expect.stringContaining('noopener'),
       );
-      expect(apiMock.startAccountSiteAuthBrowserLogin).not.toHaveBeenCalled();
-      expect(root.root.findAll((node) => node.type === 'textarea' && node.props['data-site-auth-browser-capture'] === 'text')).toHaveLength(0);
-      expect(collectText(root.root)).toContain('等待第三方登录授权完成');
+      expect(root.root.findAll((node) => node.type === 'textarea' && node.props['data-site-auth-browser-capture'] === 'text')).toHaveLength(1);
+      expect(collectText(root.root)).toContain('已打开 L 站目标中转 的 GitHub 登录窗口');
     } finally {
       root?.unmount();
     }
   });
 
-  it('shows provider OAuth configuration errors instead of opening an empty popup', async () => {
+  it('shows target-site login start errors without opening an empty popup', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -449,8 +450,8 @@ describe('OAuthManagement page', () => {
         { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
       ],
     });
-    apiMock.startSiteAuthProviderAuthorization.mockRejectedValueOnce(
-      new Error('GitHub site-auth OAuth is not configured: set SITE_AUTH_GITHUB_CLIENT_ID and SITE_AUTH_GITHUB_CLIENT_SECRET'),
+    apiMock.startAccountSiteAuthBrowserLogin.mockRejectedValueOnce(
+      new Error('target site does not support browser third-party login'),
     );
     let root!: WebTestRenderer;
     try {
@@ -465,20 +466,19 @@ describe('OAuthManagement page', () => {
       });
       await vi.waitFor(async () => {
         await flushMicrotasks();
-        expect(collectText(root!.root)).toContain('授权 GitHub 并自动保存');
+        expect(collectText(root!.root)).toContain('打开 L 站目标中转 的 GitHub 登录');
       });
 
-      await clickLink(root!, '授权 GitHub 并自动保存');
+      await clickLink(root!, '打开 L 站目标中转 的 GitHub 登录');
 
       expect(openMock).not.toHaveBeenCalled();
-      expect(collectText(root.root)).toContain('GitHub site-auth OAuth is not configured');
+      expect(collectText(root.root)).toContain('target site does not support browser third-party login');
     } finally {
       root?.unmount();
     }
   });
 
-
-  it('does not list relay target sites when saving GitHub or Google login credentials', async () => {
+  it('lists relay target sites when saving GitHub or Google login credentials', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -495,6 +495,7 @@ describe('OAuthManagement page', () => {
     apiMock.getSites.mockResolvedValue([
       { id: 1, name: 'OpenAI 官方 API', url: 'https://api.openai.com', platform: 'openai', status: 'active' },
       { id: 10, name: '哈基米', url: 'https://api.gemai.cc', platform: 'new-api', status: 'active' },
+      { id: 14, name: 'Lucky', url: 'https://new.lucky0625.qzz.io', platform: 'new-api', status: 'active' },
     ]);
 
     let root!: WebTestRenderer;
@@ -513,10 +514,13 @@ describe('OAuthManagement page', () => {
         expect(collectText(root!.root)).toContain('站点登录授权');
       });
 
-      const startLink = findAction(root!, '授权 GitHub 并自动保存');
-      expect(startLink.type).toBe('button');
-      expect(collectText(root.root)).not.toContain('哈基米');
-      expect(() => root.root.findByProps({ 'data-testid': 'site-auth-target-site-select' })).toThrow();
+      const targetSelect = root.root.findAllByType(ModernSelect).find((select) => (
+        select.props.placeholder === '选择 L 站 / NewAPI 中转站'
+      ));
+      expect(targetSelect?.props.options.map((option: any) => option.label)).toEqual(['哈基米', 'Lucky']);
+      expect(collectText(root.root)).toContain('哈基米');
+      expect(collectText(root.root)).toContain('Lucky');
+      expect(collectText(root.root)).not.toContain('OpenAI 官方 APIopenai');
     } finally {
       root?.unmount();
     }
@@ -553,7 +557,7 @@ describe('OAuthManagement page', () => {
         await flushMicrotasks();
         const text = collectText(root!.root);
         expect(text).toContain('站点登录授权');
-        expect(text).toContain('授权 Google 并自动保存');
+        expect(text).toContain('打开 L 站目标中转 的 Google 登录');
         expect(text).not.toContain('去连接管理');
         expect(text).not.toContain('Google Token');
       });

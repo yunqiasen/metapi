@@ -24,7 +24,6 @@ import {
   browserSessionCredentialCaptureScript,
   parseBrowserSessionCredentialCapture,
 } from './helpers/browserSessionCredential.js';
-import { normalizePlatformAlias } from '../../shared/platformIdentity.js';
 import {
   api,
   type OAuthConnectionInfo,
@@ -44,7 +43,6 @@ import {
 const POLL_INTERVAL_MS = 1500;
 const CONNECTION_PAGE_LIMIT = 200;
 const AUTO_REFRESH_OPTIONS = [0, 5, 10, 15, 30] as const;
-const SITE_AUTH_BROWSER_LOGIN_PLATFORMS = new Set(['new-api', 'anyrouter']);
 
 type SiteAuthImportProvider = 'linuxdo' | 'github' | 'google';
 type CreateConnectionMode = 'oauth' | 'site-auth';
@@ -54,6 +52,12 @@ type ActiveSiteAuthSession = {
   state: string;
   authorizationUrl: string;
   instructions: SiteAuthAuthorizationStartResponse['instructions'];
+};
+
+const SITE_AUTH_PROVIDER_LOGIN_URLS: Record<SiteAuthImportProvider, string> = {
+  linuxdo: 'https://linux.do/',
+  github: 'https://github.com/login',
+  google: 'https://accounts.google.com/',
 };
 
 function normalizeSiteAuthImportProvider(provider: string): SiteAuthImportProvider {
@@ -68,8 +72,8 @@ function resolveSiteAuthImportProviderLabel(provider: SiteAuthImportProvider): s
 }
 
 function resolveSiteAuthImportSecretPlaceholder(provider: SiteAuthImportProvider): string {
-  if (provider === 'github') return '粘贴目标中转站返回的 GitHub 登录 Session';
-  if (provider === 'google') return '粘贴目标中转站返回的 Google 登录 Session';
+  if (provider === 'github') return '粘贴 GitHub 网页登录凭证';
+  if (provider === 'google') return '粘贴 Google 网页登录凭证';
   return '粘贴 ld_auth_session=...';
 }
 
@@ -191,42 +195,8 @@ function openOAuthPopup(provider: string, authorizationUrl: string) {
   return popup;
 }
 
-function resolveTargetSiteLoginUrl(site: any): string {
-  const rawUrl = asTrimmedString(site?.url);
-  if (!rawUrl) return '';
-  const baseUrl = rawUrl.replace(/\/+$/, '');
-  try {
-    return new URL('/login', `${baseUrl}/`).toString();
-  } catch {
-    return `${baseUrl}/login`;
-  }
-}
-
-function supportsSiteAuthBrowserLogin(site: any): boolean {
-  const id = Number(site?.id);
-  const platform = normalizePlatformAlias(site?.platform);
-  return Number.isInteger(id)
-    && id > 0
-    && Boolean(asTrimmedString(site?.url))
-    && SITE_AUTH_BROWSER_LOGIN_PLATFORMS.has(platform);
-}
-
-function getSiteAuthBrowserLoginPriority(site: any): number {
-  const platform = normalizePlatformAlias(site?.platform);
-  if (platform === 'new-api') return 0;
-  if (platform === 'anyrouter') return 1;
-  return 99;
-}
-
-function listSiteAuthBrowserLoginTargets(sites: any[]): any[] {
-  return sites
-    .filter(supportsSiteAuthBrowserLogin)
-    .map((site, index) => ({ site, index }))
-    .sort((left, right) => (
-      getSiteAuthBrowserLoginPriority(left.site) - getSiteAuthBrowserLoginPriority(right.site)
-      || left.index - right.index
-    ))
-    .map((item) => item.site);
+function resolveSiteAuthProviderLoginUrl(provider: string | null | undefined): string {
+  return SITE_AUTH_PROVIDER_LOGIN_URLS[normalizeSiteAuthImportProvider(String(provider || 'linuxdo'))];
 }
 
 function asTrimmedString(value: string | null | undefined): string {
@@ -718,11 +688,9 @@ export default function OAuthManagement() {
   const modelsModalRequestSeqRef = useRef(0);
   const [providers, setProviders] = useState<OAuthProviderInfo[]>([]);
   const [connections, setConnections] = useState<OAuthConnectionInfo[]>([]);
-  const [sites, setSites] = useState<any[]>([]);
   const [siteAuthProviders, setSiteAuthProviders] = useState<SiteAuthProviderInfo[]>([]);
   const [createConnectionMode, setCreateConnectionMode] = useState<CreateConnectionMode>('oauth');
   const [selectedSiteAuthProviderKey, setSelectedSiteAuthProviderKey] = useState<SiteAuthImportProvider>('linuxdo');
-  const [selectedSiteAuthTargetSiteId, setSelectedSiteAuthTargetSiteId] = useState('');
   const [siteAuthCredentials, setSiteAuthCredentials] = useState<SiteAuthCredentialInfo[]>([]);
   const [siteAuthCredentialDecryptability, setSiteAuthCredentialDecryptability] =
     useState<SiteAuthCredentialDecryptabilityResponse | null>(null);
@@ -744,9 +712,7 @@ export default function OAuthManagement() {
   const [siteAuthBrowserCaptureContext, setSiteAuthBrowserCaptureContext] = useState<null | {
     provider: string;
     providerLabel: string;
-    siteId: number;
-    siteName?: string;
-    siteUrl?: string;
+    providerLoginUrl: string;
   }>(null);
   const [verifyingSiteAuthCredentialId, setVerifyingSiteAuthCredentialId] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -901,10 +867,9 @@ export default function OAuthManagement() {
 
   const load = useCallback(async () => {
     try {
-      const [providersResponse, siteAuthProvidersResponse, sitesResponse] = await Promise.all([
+      const [providersResponse, siteAuthProvidersResponse] = await Promise.all([
         api.getOAuthProviders(),
         api.getSiteAuthProviders(),
-        api.getSites(),
         loadSiteAuthCredentials(),
         loadConnections(),
       ]);
@@ -912,17 +877,10 @@ export default function OAuthManagement() {
       const nextSiteAuthProviders = Array.isArray(siteAuthProvidersResponse?.providers)
         ? siteAuthProvidersResponse.providers
         : [];
-      const nextSites = Array.isArray(sitesResponse) ? sitesResponse : [];
       setRuntimeSystemProxyConfigured(providersResponse?.defaults?.systemProxyConfigured === true);
       setProviders(nextProviders);
-      setSites(nextSites);
       setSiteAuthProviders(nextSiteAuthProviders);
       setSelectedProviderKey((current) => current || nextProviders[0]?.provider || '');
-      setSelectedSiteAuthTargetSiteId((current) => {
-        const nextSiteAuthTargetSites = listSiteAuthBrowserLoginTargets(nextSites);
-        if (current && nextSiteAuthTargetSites.some((site: any) => String(site?.id || '') === current)) return current;
-        return nextSiteAuthTargetSites[0]?.id ? String(nextSiteAuthTargetSites[0].id) : '';
-      });
     } catch (error: any) {
       console.error('failed to load oauth management data', error);
       setSessionError(error?.message || 'OAuth 管理数据加载失败');
@@ -1093,7 +1051,7 @@ export default function OAuthManagement() {
       setDrawerProjectId('');
       resetOauthProxySettings();
       setDrawerOpen(true);
-      setSessionInfo('请选择目标中转站，打开该站登录窗口，登录完成后在这里保存持久凭证。');
+      setSessionInfo('请选择 LinuxDO / GitHub / Google，打开登录窗口后保存网页登录凭证。');
       return;
     }
 
@@ -1222,7 +1180,7 @@ export default function OAuthManagement() {
     ]).map((provider) => ({
       value: provider.provider,
       label: provider.label,
-      description: '先选择目标中转站，再保存该站登录态',
+      description: '保存该 Provider 的网页登录凭证',
     })),
     [siteAuthProviders],
   );
@@ -1253,28 +1211,9 @@ export default function OAuthManagement() {
     return Array.from(seen.entries()).map(([value, label]) => ({ value, label }));
   }, [connections]);
 
-  const siteAuthTargetSites = useMemo(() => (
-    listSiteAuthBrowserLoginTargets(sites)
-  ), [sites]);
-
-  const siteAuthTargetSiteOptions = useMemo(() => (
-    siteAuthTargetSites
-      .map((site) => ({
-        value: String(site.id),
-        label: asTrimmedString(site.name) || asTrimmedString(site.url) || `站点 #${site.id}`,
-        description: [normalizePlatformAlias(site.platform) || site.platform, site.url]
-          .filter((value) => typeof value === 'string' && value.trim())
-          .join(' · '),
-      }))
-  ), [siteAuthTargetSites]);
-
-  const selectedSiteAuthTargetSite = useMemo(() => (
-    siteAuthTargetSites.find((site) => String(site?.id || '') === selectedSiteAuthTargetSiteId) || null
-  ), [selectedSiteAuthTargetSiteId, siteAuthTargetSites]);
-
-  const selectedSiteAuthTargetLoginUrl = useMemo(
-    () => resolveTargetSiteLoginUrl(selectedSiteAuthTargetSite),
-    [selectedSiteAuthTargetSite],
+  const selectedSiteAuthProviderLoginUrl = useMemo(
+    () => resolveSiteAuthProviderLoginUrl(selectedSiteAuthProvider?.provider),
+    [selectedSiteAuthProvider?.provider],
   );
 
   const filteredConnections = useMemo(() => {
@@ -1565,10 +1504,12 @@ export default function OAuthManagement() {
       setSiteAuthBrowserCaptureError('');
       const credentialLabel = parsed.username
         ? `${context.providerLabel} · ${parsed.username}`
-        : `${context.providerLabel} · ${context.siteName || context.siteUrl || '目标站 Session'}`;
+        : `${context.providerLabel} 登录凭证`;
       await api.importSiteAuthCredential({
         provider: context.provider,
         label: credentialLabel,
+        ...(parsed.username ? { username: parsed.username } : {}),
+        ...(parsed.platformUserId ? { subject: parsed.platformUserId } : {}),
         credentialType: 'session_artifact',
         payload: {
           accessToken: parsed.accessToken,
@@ -1576,18 +1517,16 @@ export default function OAuthManagement() {
           ...(parsed.username ? { username: parsed.username } : {}),
         },
         metadata: {
-          source: 'target-site-browser-login',
-          targetSiteId: context.siteId,
-          ...(context.siteName ? { targetSiteName: context.siteName } : {}),
-          ...(context.siteUrl ? { targetSiteUrl: context.siteUrl } : {}),
+          source: 'provider-browser-login',
+          providerLoginUrl: context.providerLoginUrl,
         },
       });
       await loadSiteAuthCredentials();
       setSiteAuthBrowserCaptureOpen(false);
       setSiteAuthBrowserCaptureText('');
       setSiteAuthBrowserCaptureContext(null);
-      setSessionSuccess(`${credentialLabel} 已保存，可用于目标站 Session 登录`);
-      toast.success('目标站登录凭证已保存');
+      setSessionSuccess(`${credentialLabel} 已保存`);
+      toast.success('第三方登录凭证已保存');
     } catch (error: any) {
       setSiteAuthBrowserCaptureError(error?.message || '浏览器凭证解析失败');
     } finally {
@@ -1601,49 +1540,35 @@ export default function OAuthManagement() {
       event?.preventDefault?.();
       return;
     }
-    const siteId = Number.parseInt(selectedSiteAuthTargetSiteId, 10);
-    if (!Number.isInteger(siteId) || siteId <= 0) {
+    if (!selectedSiteAuthProviderLoginUrl) {
       event?.preventDefault?.();
-      setSessionError('请先选择目标中转站');
-      return;
-    }
-    if (!selectedSiteAuthTargetSite) {
-      event?.preventDefault?.();
-      setSessionError('请选择支持网页登录保存 Session 的目标中转站');
-      return;
-    }
-    if (!selectedSiteAuthTargetLoginUrl) {
-      event?.preventDefault?.();
-      setSessionError('目标中转站缺少登录地址');
+      setSessionError('当前 Provider 缺少登录地址');
       return;
     }
     const providerLabel = resolveSiteAuthProviderLabel(provider.provider) || provider.label;
-    const actionKey = `site-auth-browser-start:${provider.provider}`;
-    setActionLoadingKey(actionKey);
-    try {
-      const started = await api.startAccountSiteAuthBrowserLogin({
-        siteId,
-        provider: provider.provider,
-      });
-      const siteName = asTrimmedString(selectedSiteAuthTargetSite?.name);
-      const siteUrl = asTrimmedString(started?.targetSiteUrl)
-        || asTrimmedString(selectedSiteAuthTargetSite?.url);
-      setSiteAuthBrowserCaptureContext({
-        provider: provider.provider,
-        providerLabel,
-        siteId,
-        ...(siteName ? { siteName } : {}),
-        ...(siteUrl ? { siteUrl } : {}),
-      });
-      setSiteAuthBrowserCaptureText('');
-      setSiteAuthBrowserCaptureError('');
-      setSiteAuthBrowserCaptureOpen(true);
-      setSessionInfo(`已打开 ${siteName || siteUrl || '目标中转站'} 登录窗口。登录完成后在这里保存 ${providerLabel} 目标站 Session。`);
-    } catch (error: any) {
-      setSessionError(error?.message || '无法打开目标站登录窗口');
-    } finally {
-      setActionLoadingKey('');
+    event?.preventDefault?.();
+    if (typeof window !== 'undefined' && typeof window.open === 'function') {
+      const popup = window.open(
+        selectedSiteAuthProviderLoginUrl,
+        '_blank',
+        `${OAUTH_POPUP_FEATURES},noopener,noreferrer`,
+      );
+      if (popup) {
+        try {
+          popup.opener = null;
+        } catch {}
+        if (typeof popup.focus === 'function') popup.focus();
+      }
     }
+    setSiteAuthBrowserCaptureContext({
+      provider: provider.provider,
+      providerLabel,
+      providerLoginUrl: selectedSiteAuthProviderLoginUrl,
+    });
+    setSiteAuthBrowserCaptureText('');
+    setSiteAuthBrowserCaptureError('');
+    setSiteAuthBrowserCaptureOpen(true);
+    setSessionInfo(`已打开 ${providerLabel} 登录页。登录完成后在这里保存 ${providerLabel} 网页登录凭证。`);
   };
 
   const handleSubmitManualCallback = async () => {
@@ -2714,7 +2639,7 @@ export default function OAuthManagement() {
       <CenteredModal
         open={siteAuthBrowserCaptureOpen}
         onClose={closeSiteAuthBrowserCapture}
-        title={`保存 ${siteAuthBrowserCaptureContext?.providerLabel || ''} 目标站登录态`.trim()}
+        title={`保存 ${siteAuthBrowserCaptureContext?.providerLabel || ''} 登录凭证`.trim()}
         maxWidth={680}
         footer={(
           <>
@@ -2734,7 +2659,7 @@ export default function OAuthManagement() {
       >
         <div className="oauth-drawer-section">
           <div className="oauth-form-note">
-            登录目标中转站后，在目标站页面控制台执行下面脚本，把复制出的结果粘贴到这里。保存后会进入第三方登录凭证列表，可复用。
+            登录对应 Provider 后，在登录页面控制台执行下面脚本，把复制出的结果粘贴到这里。保存后会进入第三方登录凭证列表。
           </div>
           <div className="oauth-form-field">
             <div className="oauth-field-label">浏览器捕获脚本</div>
@@ -2808,19 +2733,6 @@ export default function OAuthManagement() {
                           placeholder="选择 LinuxDO / GitHub / Google"
                         />
                       </div>
-                      <div className="oauth-form-field">
-                        <div className="oauth-field-label">目标中转站</div>
-                        <ModernSelect
-                          data-testid="site-auth-target-site-select"
-                          value={selectedSiteAuthTargetSiteId}
-                          onChange={(value) => setSelectedSiteAuthTargetSiteId(String(value || ''))}
-                          options={siteAuthTargetSiteOptions}
-                          placeholder="选择要登录的目标中转站"
-                          emptyLabel="暂无支持网页登录的目标中转站"
-                          searchable
-                          searchPlaceholder="搜索站点名称或 URL"
-                        />
-                      </div>
                     </>
                   ) : (
                     <div className="oauth-form-field">
@@ -2866,15 +2778,15 @@ export default function OAuthManagement() {
               {drawerIntent.mode === 'create' && createConnectionMode === 'site-auth' ? (
                 <>
                   <div className="oauth-form-note">
-                    这里不保存 GitHub / Google / LinuxDO 官方站 token。选择目标中转站后，直接打开该站自己的登录页，完成后在这里保存目标站登录态。
+                    保存 LinuxDO / GitHub / Google 的网页登录凭证。这里不选择任何中转站，也不保存官方 API Key。
                   </div>
                   <a
-                    className={`btn btn-primary ${(!selectedSiteAuthProvider || !selectedSiteAuthTargetSiteId || !selectedSiteAuthTargetLoginUrl || actionLoadingKey.startsWith('site-auth-browser-start:')) ? 'is-disabled' : ''}`.trim()}
-                    href={selectedSiteAuthTargetLoginUrl || '#'}
+                    className={`btn btn-primary ${(!selectedSiteAuthProvider || !selectedSiteAuthProviderLoginUrl || actionLoadingKey.startsWith('site-auth-browser-start:')) ? 'is-disabled' : ''}`.trim()}
+                    href={selectedSiteAuthProviderLoginUrl || '#'}
                     target="_blank"
                     rel="noopener noreferrer"
                     data-testid="site-auth-target-login-link"
-                    aria-disabled={!selectedSiteAuthProvider || !selectedSiteAuthTargetSiteId || !selectedSiteAuthTargetLoginUrl || actionLoadingKey.startsWith('site-auth-browser-start:')}
+                    aria-disabled={!selectedSiteAuthProvider || !selectedSiteAuthProviderLoginUrl || actionLoadingKey.startsWith('site-auth-browser-start:')}
                     onClick={handleStartSiteAuthAuthorization}
                   >
                     {actionLoadingKey.startsWith('site-auth-browser-start:')

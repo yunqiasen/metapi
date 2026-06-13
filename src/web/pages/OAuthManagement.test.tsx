@@ -323,14 +323,14 @@ describe('OAuthManagement page', () => {
         expect(text).toContain('Provider 连接列表');
         expect(text).toContain('第三方登录凭证');
         expect(text).toContain('暂无第三方登录凭证');
-        expect(text).toContain('在 OAuth 管理里选择目标中转站并完成浏览器登录后，会保存成可复用的目标站 Session。');
+        expect(text).toContain('点击“授权添加凭证”，选择 LinuxDO / GitHub / Google 登录后保存。');
       });
     } finally {
       root?.unmount();
     }
   });
 
-  it('uses a native target-site login link instead of a scripted popup', async () => {
+  it('uses a native provider login link without requiring a target relay site', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -343,10 +343,6 @@ describe('OAuthManagement page', () => {
         { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
       ],
     });
-    let resolveStart!: (value: unknown) => void;
-    apiMock.startAccountSiteAuthBrowserLogin.mockImplementationOnce(() => new Promise((resolve) => {
-      resolveStart = resolve;
-    }));
     let root!: WebTestRenderer;
     try {
       await act(async () => {
@@ -365,35 +361,25 @@ describe('OAuthManagement page', () => {
 
       await clickButton(root!, '授权添加凭证');
       const startLink = findLink(root!, '打开 LinuxDO 登录并保存凭证');
-      expect(startLink.props.href).toBe('https://target.example.com/login');
+      expect(startLink.props.href).toBe('https://linux.do/');
       expect(startLink.props.target).toBe('_blank');
+      expect(() => root.root.findByProps({ 'data-testid': 'site-auth-target-site-select' })).toThrow();
       const preventDefaultMock = vi.fn();
       await act(async () => {
         void startLink.props.onClick({ preventDefault: preventDefaultMock });
         await Promise.resolve();
       });
 
-      expect(preventDefaultMock).not.toHaveBeenCalled();
-      expect(openMock).not.toHaveBeenCalled();
-      expect(apiMock.startAccountSiteAuthBrowserLogin).toHaveBeenCalledWith({ siteId: 31, provider: 'linuxdo' });
-
-      await act(async () => {
-        resolveStart({
-          success: true,
-          siteId: 31,
-          provider: 'linuxdo',
-          authorizationUrl: 'https://target.example.com/login',
-          targetSiteUrl: 'https://target.example.com',
-          instructions: { mode: 'target_site_browser_login' },
-        });
-        await Promise.resolve();
-      });
+      expect(preventDefaultMock).toHaveBeenCalled();
+      expect(openMock).toHaveBeenCalledWith('https://linux.do/', '_blank', expect.stringContaining('noopener'));
+      expect(apiMock.startAccountSiteAuthBrowserLogin).not.toHaveBeenCalled();
+      expect(collectText(root.root)).toContain('保存 LinuxDO 登录凭证');
     } finally {
       root?.unmount();
     }
   });
 
-  it('ignores official API sites when choosing the target-site login link', async () => {
+  it('does not list relay target sites when saving GitHub or Google login credentials', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -409,7 +395,7 @@ describe('OAuthManagement page', () => {
     });
     apiMock.getSites.mockResolvedValue([
       { id: 1, name: 'OpenAI 官方 API', url: 'https://api.openai.com', platform: 'openai', status: 'active' },
-      { id: 31, name: 'L 站目标中转', url: 'https://target.example.com', platform: 'new-api', status: 'active' },
+      { id: 10, name: '哈基米', url: 'https://api.gemai.cc', platform: 'new-api', status: 'active' },
     ]);
 
     let root!: WebTestRenderer;
@@ -428,65 +414,16 @@ describe('OAuthManagement page', () => {
         expect(collectText(root!.root)).toContain('站点登录授权');
       });
 
-      const targetSelect = root.root.findByProps({ 'data-testid': 'site-auth-target-site-select' });
-      expect(targetSelect.props.options).toEqual([
-        expect.objectContaining({
-          value: '31',
-          label: 'L 站目标中转',
-          description: 'new-api · https://target.example.com',
-        }),
-      ]);
-
       const startLink = findLink(root!, '打开 GitHub 登录并保存凭证');
-      expect(startLink.props.href).toBe('https://target.example.com/login');
-      expect(startLink.props.href).not.toBe('https://api.openai.com/login');
+      expect(startLink.props.href).toBe('https://github.com/login');
+      expect(collectText(root.root)).not.toContain('哈基米');
+      expect(() => root.root.findByProps({ 'data-testid': 'site-auth-target-site-select' })).toThrow();
     } finally {
       root?.unmount();
     }
   });
 
-  it('prefers New API target sites for browser login defaults', async () => {
-    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
-    apiMock.getOAuthConnections.mockResolvedValue({
-      items: [],
-      total: 0,
-      limit: 100,
-      offset: 0,
-    });
-    apiMock.getSiteAuthProviders.mockResolvedValue({
-      providers: [
-        { provider: 'google', label: 'Google', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
-      ],
-    });
-    apiMock.getSites.mockResolvedValue([
-      { id: 9, name: 'AnyRouter', url: 'https://anyrouter.top', platform: 'anyrouter', status: 'active' },
-      { id: 10, name: '哈基米', url: 'https://api.gemai.cc', platform: 'new-api', status: 'active' },
-    ]);
-
-    let root!: WebTestRenderer;
-    try {
-      await act(async () => {
-        root = create(
-          <ToastProvider>
-            <MemoryRouter initialEntries={['/oauth?siteAuthProvider=google']}>
-              <OAuthManagement />
-            </MemoryRouter>
-          </ToastProvider>,
-        );
-      });
-      await vi.waitFor(async () => {
-        await flushMicrotasks();
-        expect(collectText(root!.root)).toContain('站点登录授权');
-      });
-
-      const startLink = findLink(root!, '打开 Google 登录并保存凭证');
-      expect(startLink.props.href).toBe('https://api.gemai.cc/login');
-    } finally {
-      root?.unmount();
-    }
-  });
-
-  it('starts LinuxDO target-site browser login and saves the captured session from the drawer', async () => {
+  it('starts LinuxDO provider browser login and saves the captured credential from the drawer', async () => {
     apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
     apiMock.getOAuthConnections.mockResolvedValue({
       items: [],
@@ -498,14 +435,6 @@ describe('OAuthManagement page', () => {
       providers: [
         { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie', 'session_artifact'], captureModes: ['browser_assisted'], enabled: true },
       ],
-    });
-    apiMock.startAccountSiteAuthBrowserLogin.mockResolvedValueOnce({
-      success: true,
-      siteId: 31,
-      provider: 'linuxdo',
-      authorizationUrl: 'https://target.example.com/login',
-      targetSiteUrl: 'https://target.example.com',
-      instructions: { mode: 'target_site_browser_login' },
     });
     let root!: WebTestRenderer;
     try {
@@ -525,19 +454,18 @@ describe('OAuthManagement page', () => {
 
       await clickButton(root!, '授权添加凭证');
       expect(collectText(root.root)).toContain('站点登录授权');
-      expect(collectText(root.root)).toContain('目标中转站');
       expect(collectText(root.root)).toContain('打开 LinuxDO 登录并保存凭证');
-      expect(collectText(root.root)).toContain('这里不保存 GitHub / Google / LinuxDO 官方站 token');
+      expect(collectText(root.root)).toContain('保存 LinuxDO / GitHub / Google 的网页登录凭证');
 
       await clickLink(root!, '打开 LinuxDO 登录并保存凭证');
       await vi.waitFor(async () => {
         await flushMicrotasks();
       });
 
-      expect(apiMock.startAccountSiteAuthBrowserLogin).toHaveBeenCalledWith({ siteId: 31, provider: 'linuxdo' });
+      expect(apiMock.startAccountSiteAuthBrowserLogin).not.toHaveBeenCalled();
       expect(apiMock.startSiteAuthProviderAuthorization).not.toHaveBeenCalled();
       expect(apiMock.getSiteAuthAuthorizationSession).not.toHaveBeenCalled();
-      expect(openMock).not.toHaveBeenCalled();
+      expect(openMock).toHaveBeenCalledWith('https://linux.do/', '_blank', expect.stringContaining('noopener'));
       expect(openMock).not.toHaveBeenCalledWith(
         expect.stringContaining('linux.do/user-api-key/new'),
         expect.anything(),
@@ -562,16 +490,16 @@ describe('OAuthManagement page', () => {
         provider: 'linuxdo',
         label: 'LinuxDO · target-user',
         credentialType: 'session_artifact',
+        subject: '1234',
+        username: 'target-user',
         payload: {
           accessToken: 'target-session-token',
           platformUserId: '1234',
           username: 'target-user',
         },
         metadata: {
-          source: 'target-site-browser-login',
-          targetSiteId: 31,
-          targetSiteName: 'L 站目标中转',
-          targetSiteUrl: 'https://target.example.com',
+          source: 'provider-browser-login',
+          providerLoginUrl: 'https://linux.do/',
         },
       });
     } finally {
@@ -610,7 +538,6 @@ describe('OAuthManagement page', () => {
         await flushMicrotasks();
         const text = collectText(root!.root);
         expect(text).toContain('站点登录授权');
-        expect(text).toContain('目标中转站');
         expect(text).toContain('打开 Google 登录并保存凭证');
         expect(text).not.toContain('去连接管理');
         expect(text).not.toContain('Google Token');

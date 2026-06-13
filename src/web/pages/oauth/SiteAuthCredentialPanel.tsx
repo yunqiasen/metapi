@@ -66,7 +66,7 @@ export default function SiteAuthCredentialPanel({
         <div>
           <div className="oauth-workbench-title">第三方登录凭证</div>
           <div className="oauth-workbench-meta">
-            保存 LinuxDO / GitHub / Google 的网页登录凭证，后续连接流程可复用。
+            保存 LinuxDO Cookie 或 GitHub / Google OAuth 登录凭证，后续连接流程可复用。
           </div>
         </div>
         <div className="oauth-site-auth-import-actions">
@@ -74,7 +74,7 @@ export default function SiteAuthCredentialPanel({
             授权添加凭证
           </button>
           <button type="button" className="btn btn-ghost oauth-outline-button" onClick={() => onImportCredential('linuxdo')}>
-            手动导入兜底
+            导入 LinuxDO Cookie
           </button>
         </div>
       </div>
@@ -116,7 +116,7 @@ export default function SiteAuthCredentialPanel({
           </svg>
           <div className="empty-state-title">暂无第三方登录凭证</div>
           <div className="empty-state-desc">
-            点击“授权添加凭证”，选择 LinuxDO / GitHub / Google 登录后保存。
+            GitHub / Google 点“授权添加凭证”自动保存；LinuxDO 用“导入 LinuxDO Cookie”。
           </div>
         </div>
       ) : (

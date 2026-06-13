@@ -323,8 +323,50 @@ describe('OAuthManagement page', () => {
         expect(text).toContain('Provider 连接列表');
         expect(text).toContain('第三方登录凭证');
         expect(text).toContain('暂无第三方登录凭证');
-        expect(text).toContain('点击“授权添加凭证”，选择 LinuxDO / GitHub / Google 登录后保存。');
+        expect(text).toContain('GitHub / Google 点“授权添加凭证”自动保存；LinuxDO 用“导入 LinuxDO Cookie”。');
       });
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('does not offer LinuxDO in the automatic OAuth authorization drawer', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({
+      providers: [
+        { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie'], captureModes: ['manual_paste', 'browser_assisted'], enabled: true },
+        { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
+        { provider: 'google', label: 'Google', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
+      ],
+    });
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter initialEntries={['/oauth?siteAuthProvider=linuxdo']}>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('授权 GitHub 并自动保存');
+      });
+
+      expect(collectText(root.root)).not.toContain('授权 LinuxDO 并自动保存');
+      const providerSelect = root.root.findAllByType(ModernSelect).find((select) => (
+        select.props.placeholder === '选择 GitHub / Google'
+      ));
+      expect(providerSelect?.props.options.map((option: any) => option.value)).toEqual(['github', 'google']);
+      expect(apiMock.startSiteAuthProviderAuthorization).not.toHaveBeenCalledWith('linuxdo');
     } finally {
       root?.unmount();
     }
@@ -446,8 +488,8 @@ describe('OAuthManagement page', () => {
     });
     apiMock.getSiteAuthProviders.mockResolvedValue({
       providers: [
-        { provider: 'github', label: 'GitHub', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
-        { provider: 'google', label: 'Google', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+        { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token', 'session_artifact'], captureModes: ['oauth_callback', 'browser_assisted'], enabled: true },
+        { provider: 'google', label: 'Google', credentialTypes: ['oauth_token', 'session_artifact'], captureModes: ['oauth_callback', 'browser_assisted'], enabled: true },
       ],
     });
     apiMock.getSites.mockResolvedValue([
@@ -490,8 +532,8 @@ describe('OAuthManagement page', () => {
     });
     apiMock.getSiteAuthProviders.mockResolvedValue({
       providers: [
-        { provider: 'github', label: 'GitHub', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
-        { provider: 'google', label: 'Google', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+        { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token', 'session_artifact'], captureModes: ['oauth_callback', 'browser_assisted'], enabled: true },
+        { provider: 'google', label: 'Google', credentialTypes: ['oauth_token', 'session_artifact'], captureModes: ['oauth_callback', 'browser_assisted'], enabled: true },
       ],
     });
 
@@ -740,10 +782,10 @@ describe('OAuthManagement page', () => {
       });
       await vi.waitFor(async () => {
         await flushMicrotasks();
-        expect(collectText(root!.root)).toContain('手动导入兜底');
+        expect(collectText(root!.root)).toContain('导入 LinuxDO Cookie');
       });
 
-      await clickButton(root!, '手动导入兜底');
+      await clickButton(root!, '导入 LinuxDO Cookie');
       expect(collectText(root.root)).toContain('导入 LinuxDO Cookie 凭证');
       const labelInput = root.root.find((node) => node.type === 'input' && node.props['data-site-auth-import'] === 'label');
       const cookieInput = root.root.find((node) => node.type === 'textarea' && node.props['data-site-auth-import'] === 'cookie');
@@ -778,8 +820,8 @@ describe('OAuthManagement page', () => {
     apiMock.getSiteAuthProviders.mockResolvedValue({
       providers: [
         { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie'], captureModes: ['browser_assisted'], enabled: true },
-        { provider: 'github', label: 'GitHub', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
-        { provider: 'google', label: 'Google', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+        { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token', 'session_artifact'], captureModes: ['oauth_callback', 'browser_assisted'], enabled: true },
+        { provider: 'google', label: 'Google', credentialTypes: ['oauth_token', 'session_artifact'], captureModes: ['oauth_callback', 'browser_assisted'], enabled: true },
       ],
     });
 
@@ -798,7 +840,7 @@ describe('OAuthManagement page', () => {
         await flushMicrotasks();
         const text = collectText(root!.root);
         expect(text).toContain('授权添加凭证');
-        expect(text).toContain('手动导入兜底');
+        expect(text).toContain('导入 LinuxDO Cookie');
         expect(text).not.toContain('GitHub Token');
         expect(text).not.toContain('Google Token');
       });
@@ -837,10 +879,10 @@ describe('OAuthManagement page', () => {
       });
       await vi.waitFor(async () => {
         await flushMicrotasks();
-        expect(collectText(root!.root)).toContain('手动导入兜底');
+        expect(collectText(root!.root)).toContain('导入 LinuxDO Cookie');
       });
 
-      await clickButton(root!, '手动导入兜底');
+      await clickButton(root!, '导入 LinuxDO Cookie');
       expect(collectText(root.root)).toContain('导入 LinuxDO Cookie 凭证');
       const captureInput = root.root.find((node) => node.type === 'textarea' && node.props['data-site-auth-import'] === 'capture');
       const cookieInput = root.root.find((node) => node.type === 'textarea' && node.props['data-site-auth-import'] === 'cookie');

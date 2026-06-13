@@ -54,11 +54,19 @@ type ActiveSiteAuthSession = {
   instructions: SiteAuthAuthorizationStartResponse['instructions'];
 };
 
-const SITE_AUTH_PROVIDER_LOGIN_URLS: Record<SiteAuthImportProvider, string> = {
-  linuxdo: 'https://linux.do/',
-  github: 'https://github.com/login',
-  google: 'https://accounts.google.com/',
-};
+const FALLBACK_SITE_AUTH_PROVIDERS: SiteAuthProviderInfo[] = [
+  { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie'], captureModes: ['manual_paste', 'browser_assisted'], enabled: true },
+  { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
+  { provider: 'google', label: 'Google', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
+];
+
+function listSiteAuthProviderSource(providers: SiteAuthProviderInfo[]): SiteAuthProviderInfo[] {
+  return providers.length > 0 ? providers : FALLBACK_SITE_AUTH_PROVIDERS;
+}
+
+function supportsAutomaticSiteAuthOAuth(provider: SiteAuthProviderInfo): boolean {
+  return provider.enabled !== false && provider.captureModes.includes('oauth_callback');
+}
 
 function normalizeSiteAuthImportProvider(provider: string): SiteAuthImportProvider {
   if (provider === 'github' || provider === 'google') return provider;
@@ -193,10 +201,6 @@ function openOAuthPopup(provider: string, authorizationUrl: string) {
     popup.focus();
   }
   return popup;
-}
-
-function resolveSiteAuthProviderLoginUrl(provider: string | null | undefined): string {
-  return SITE_AUTH_PROVIDER_LOGIN_URLS[normalizeSiteAuthImportProvider(String(provider || 'linuxdo'))];
 }
 
 function asTrimmedString(value: string | null | undefined): string {
@@ -1178,17 +1182,18 @@ export default function OAuthManagement() {
     [providers],
   );
 
+  const automaticSiteAuthProviders = useMemo(
+    () => listSiteAuthProviderSource(siteAuthProviders).filter(supportsAutomaticSiteAuthOAuth),
+    [siteAuthProviders],
+  );
+
   const siteAuthProviderOptions = useMemo(
-    () => (siteAuthProviders.length > 0 ? siteAuthProviders : [
-      { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: [], captureModes: [], enabled: true },
-      { provider: 'github', label: 'GitHub', credentialTypes: [], captureModes: [], enabled: true },
-      { provider: 'google', label: 'Google', credentialTypes: [], captureModes: [], enabled: true },
-    ]).map((provider) => ({
+    () => automaticSiteAuthProviders.map((provider) => ({
       value: provider.provider,
       label: provider.label,
-      description: '保存该 Provider 的网页登录凭证',
+      description: 'OAuth 授权回调后自动保存凭证',
     })),
-    [siteAuthProviders],
+    [automaticSiteAuthProviders],
   );
 
   const selectedProvider = useMemo(
@@ -1197,13 +1202,17 @@ export default function OAuthManagement() {
   );
 
   const selectedSiteAuthProvider = useMemo(
-    () => (siteAuthProviders.length > 0 ? siteAuthProviders : [
-      { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: [], captureModes: [], enabled: true },
-      { provider: 'github', label: 'GitHub', credentialTypes: [], captureModes: [], enabled: true },
-      { provider: 'google', label: 'Google', credentialTypes: [], captureModes: [], enabled: true },
-    ]).find((provider) => provider.provider === selectedSiteAuthProviderKey) || null,
-    [siteAuthProviders, selectedSiteAuthProviderKey],
+    () => automaticSiteAuthProviders.find((provider) => provider.provider === selectedSiteAuthProviderKey) || null,
+    [automaticSiteAuthProviders, selectedSiteAuthProviderKey],
   );
+
+  useEffect(() => {
+    if (!drawerOpen || drawerIntent.mode !== 'create' || createConnectionMode !== 'site-auth') return;
+    const firstProvider = automaticSiteAuthProviders[0];
+    if (!firstProvider) return;
+    if (automaticSiteAuthProviders.some((provider) => provider.provider === selectedSiteAuthProviderKey)) return;
+    setSelectedSiteAuthProviderKey(normalizeSiteAuthImportProvider(firstProvider.provider));
+  }, [automaticSiteAuthProviders, createConnectionMode, drawerIntent.mode, drawerOpen, selectedSiteAuthProviderKey]);
 
   const siteOptions = useMemo(() => {
     const seen = new Map<string, string>();
@@ -1216,11 +1225,6 @@ export default function OAuthManagement() {
     });
     return Array.from(seen.entries()).map(([value, label]) => ({ value, label }));
   }, [connections]);
-
-  const selectedSiteAuthProviderLoginUrl = useMemo(
-    () => resolveSiteAuthProviderLoginUrl(selectedSiteAuthProvider?.provider),
-    [selectedSiteAuthProvider?.provider],
-  );
 
   const filteredConnections = useMemo(() => {
     const search = searchQuery.trim().toLowerCase();
@@ -1303,10 +1307,12 @@ export default function OAuthManagement() {
     setShowColumnMenu(false);
   };
 
-  const openSiteAuthAuthorizationDrawer = (provider: SiteAuthImportProvider = 'linuxdo') => {
+  const openSiteAuthAuthorizationDrawer = (provider: SiteAuthImportProvider = 'github') => {
+    const requestedProvider = automaticSiteAuthProviders.find((item) => item.provider === provider);
+    const nextProvider = requestedProvider || automaticSiteAuthProviders[0];
     setDrawerIntent({ mode: 'create' });
     setCreateConnectionMode('site-auth');
-    setSelectedSiteAuthProviderKey(provider);
+    setSelectedSiteAuthProviderKey(normalizeSiteAuthImportProvider(nextProvider?.provider || 'github'));
     setDrawerProjectId('');
     resetOauthProxySettings();
     setDrawerOpen(true);
@@ -2727,7 +2733,7 @@ export default function OAuthManagement() {
                           value={selectedSiteAuthProviderKey}
                           onChange={(value) => setSelectedSiteAuthProviderKey(normalizeSiteAuthImportProvider(String(value || '')))}
                           options={siteAuthProviderOptions}
-                          placeholder="选择 LinuxDO / GitHub / Google"
+                          placeholder="选择 GitHub / Google"
                         />
                       </div>
                     </>
@@ -2775,7 +2781,7 @@ export default function OAuthManagement() {
               {drawerIntent.mode === 'create' && createConnectionMode === 'site-auth' ? (
                 <>
                   <div className="oauth-form-note">
-                    通过 LinuxDO / GitHub / Google 官方授权页保存登录凭证。这里不选择任何中转站，也不保存官方 API Key。
+                    GitHub / Google 走官方 OAuth 小窗口，回调后自动保存凭证。LinuxDO 不在这里自动授权，请用右侧“导入 LinuxDO Cookie”。
                   </div>
                   <button
                     type="button"
@@ -2787,7 +2793,9 @@ export default function OAuthManagement() {
                   >
                     {actionLoadingKey.startsWith('site-auth-browser-start:')
                       ? '启动中...'
-                      : `授权 ${selectedSiteAuthProvider?.label || ''} 并自动保存`.trim()}
+                      : selectedSiteAuthProvider
+                        ? `授权 ${selectedSiteAuthProvider.label} 并自动保存`.trim()
+                        : '没有可自动授权的 Provider'}
                   </button>
                 </>
               ) : (

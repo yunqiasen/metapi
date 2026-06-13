@@ -243,7 +243,7 @@ describe('OAuthManagement page', () => {
       await act(async () => {
         root = create(
           <ToastProvider>
-            <MemoryRouter>
+            <MemoryRouter initialEntries={['/oauth?siteAuthProvider=github']}>
               <OAuthManagement />
             </MemoryRouter>
           </ToastProvider>,
@@ -293,7 +293,7 @@ describe('OAuthManagement page', () => {
       await act(async () => {
         root = create(
           <ToastProvider>
-            <MemoryRouter>
+            <MemoryRouter initialEntries={['/oauth?siteAuthProvider=github']}>
               <OAuthManagement />
             </MemoryRouter>
           </ToastProvider>,
@@ -307,6 +307,86 @@ describe('OAuthManagement page', () => {
         expect(text).toContain('第三方登录凭证');
         expect(text).toContain('暂无第三方登录凭证');
         expect(text).toContain('在 OAuth 管理里选择目标中转站并完成浏览器登录后，会保存成可复用的目标站 Session。');
+      });
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('opens a synchronous target-site login bridge popup before waiting for the target-site login API', async () => {
+    apiMock.getOAuthProviders.mockResolvedValue({ providers: [] });
+    apiMock.getOAuthConnections.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    apiMock.getSiteAuthProviders.mockResolvedValue({
+      providers: [
+        { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['session_artifact'], captureModes: ['browser_assisted'], enabled: true },
+      ],
+    });
+    let resolveStart!: (value: unknown) => void;
+    apiMock.startAccountSiteAuthBrowserLogin.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveStart = resolve;
+    }));
+    const documentOpenMock = vi.fn();
+    const documentWriteMock = vi.fn();
+    const documentCloseMock = vi.fn();
+    openMock.mockReturnValueOnce({
+      focus: focusMock,
+      document: {
+        open: documentOpenMock,
+        write: documentWriteMock,
+        close: documentCloseMock,
+      },
+    });
+
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <ToastProvider>
+            <MemoryRouter>
+              <OAuthManagement />
+            </MemoryRouter>
+          </ToastProvider>,
+        );
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(collectText(root!.root)).toContain('授权添加凭证');
+      });
+
+      await clickButton(root!, '授权添加凭证');
+      const startButton = findButton(root!, '打开 LinuxDO 登录并保存凭证');
+      await act(async () => {
+        void startButton.props.onClick();
+        await Promise.resolve();
+      });
+
+      expect(openMock).toHaveBeenNthCalledWith(
+        1,
+        'about:blank',
+        'oauth-site-auth-target-linuxdo',
+        expect.stringContaining('width=540'),
+      );
+      expect(String(openMock.mock.calls[0]?.[2] || '')).not.toContain('noopener');
+      expect(documentOpenMock).toHaveBeenCalled();
+      expect(documentWriteMock).toHaveBeenCalledWith(expect.stringContaining('https://target.example.com/login'));
+      expect(documentCloseMock).toHaveBeenCalled();
+      expect(apiMock.startAccountSiteAuthBrowserLogin).toHaveBeenCalledWith({ siteId: 31, provider: 'linuxdo' });
+
+      await act(async () => {
+        resolveStart({
+          success: true,
+          siteId: 31,
+          provider: 'linuxdo',
+          authorizationUrl: 'https://target.example.com/login',
+          targetSiteUrl: 'https://target.example.com',
+          instructions: { mode: 'target_site_browser_login' },
+        });
+        await Promise.resolve();
       });
     } finally {
       root?.unmount();
@@ -365,7 +445,7 @@ describe('OAuthManagement page', () => {
       expect(apiMock.startSiteAuthProviderAuthorization).not.toHaveBeenCalled();
       expect(apiMock.getSiteAuthAuthorizationSession).not.toHaveBeenCalled();
       expect(openMock).toHaveBeenCalledWith(
-        'https://target.example.com/login',
+        'about:blank',
         'oauth-site-auth-target-linuxdo',
         expect.stringContaining('width=540'),
       );

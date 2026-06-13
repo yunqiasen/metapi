@@ -167,12 +167,19 @@ const COLUMN_OPTIONS: Array<{ key: ColumnKey; label: string }> = [
   { key: 'proxy', label: '代理 / 项目' },
 ];
 
+const OAUTH_POPUP_FEATURES = 'popup=yes,width=540,height=760,resizable=yes,scrollbars=yes';
+
+type PreparedOAuthPopup = {
+  popup: Window | null;
+  openedUrl: string;
+};
+
 function openOAuthPopup(provider: string, authorizationUrl: string) {
-  if (typeof window === 'undefined' || typeof window.open !== 'function') return;
+  if (typeof window === 'undefined' || typeof window.open !== 'function') return null;
   const popup = window.open(
     authorizationUrl,
     `oauth-${provider}`,
-    'popup=yes,width=540,height=760,resizable=yes,scrollbars=yes,noopener,noreferrer',
+    `${OAUTH_POPUP_FEATURES},noopener,noreferrer`,
   );
   if (popup) {
     try {
@@ -183,6 +190,86 @@ function openOAuthPopup(provider: string, authorizationUrl: string) {
   }
   if (popup && typeof popup.focus === 'function') {
     popup.focus();
+  }
+  return popup;
+}
+
+function openPreparedOAuthPopup(provider: string, initialAuthorizationUrl?: string | null): PreparedOAuthPopup {
+  const initialUrl = typeof initialAuthorizationUrl === 'string' && initialAuthorizationUrl.trim()
+    ? initialAuthorizationUrl.trim()
+    : '';
+  const openedUrl = initialUrl || 'about:blank';
+  if (typeof window === 'undefined' || typeof window.open !== 'function') return { popup: null, openedUrl };
+  const popup = window.open(
+    'about:blank',
+    `oauth-${provider}`,
+    OAUTH_POPUP_FEATURES,
+  );
+  if (popup) {
+    try {
+      const redirectScript = initialUrl
+        ? `<script>window.location.replace(${JSON.stringify(initialUrl)});<\/script>`
+        : '';
+      const message = initialUrl ? '正在打开目标站登录窗口...' : '正在准备打开目标站登录窗口...';
+      popup.document.open();
+      popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Metapi Login</title></head><body style="font-family:sans-serif;padding:24px"><p>${message}</p>${redirectScript}</body></html>`);
+      popup.document.close();
+    } catch {
+      try {
+        if (initialUrl) popup.location.replace(initialUrl);
+      } catch {
+        // Some browsers restrict writing into the popup; navigation fallback still applies.
+      }
+    }
+    if (typeof popup.focus === 'function') popup.focus();
+  }
+  return { popup, openedUrl };
+}
+
+function normalizePopupUrlForCompare(value: string): string {
+  return value.trim().replace(/\/+$/, '');
+}
+
+function navigatePreparedOAuthPopup(prepared: PreparedOAuthPopup, provider: string, authorizationUrl: string) {
+  const nextUrl = authorizationUrl.trim();
+  const { popup, openedUrl } = prepared;
+  if (nextUrl && normalizePopupUrlForCompare(openedUrl) === normalizePopupUrlForCompare(nextUrl)) {
+    try {
+      if (popup && typeof popup.focus === 'function') popup.focus();
+    } catch {
+      // Ignore focus failures on cross-origin popups.
+    }
+    return;
+  }
+  if (popup) {
+    try {
+      popup.location.replace(nextUrl);
+      if (typeof popup.focus === 'function') popup.focus();
+      return;
+    } catch {
+      // Fall back to a direct popup open below.
+    }
+  }
+  openOAuthPopup(provider, nextUrl);
+}
+
+function closePreparedOAuthPopup(popup: Window | null) {
+  if (!popup) return;
+  try {
+    popup.close();
+  } catch {
+    // Ignore browser popup close restrictions.
+  }
+}
+
+function resolveTargetSiteLoginUrl(site: any): string {
+  const rawUrl = asTrimmedString(site?.url);
+  if (!rawUrl) return '';
+  const baseUrl = rawUrl.replace(/\/+$/, '');
+  try {
+    return new URL('/login', `${baseUrl}/`).toString();
+  } catch {
+    return `${baseUrl}/login`;
   }
 }
 
@@ -1550,6 +1637,11 @@ export default function OAuthManagement() {
       return;
     }
     const providerLabel = resolveSiteAuthProviderLabel(provider.provider) || provider.label;
+    const popupProvider = `site-auth-target-${provider.provider}`;
+    const popup = openPreparedOAuthPopup(
+      popupProvider,
+      resolveTargetSiteLoginUrl(selectedSiteAuthTargetSite),
+    );
     const actionKey = `site-auth-browser-start:${provider.provider}`;
     setActionLoadingKey(actionKey);
     try {
@@ -1560,7 +1652,7 @@ export default function OAuthManagement() {
       const siteName = asTrimmedString(selectedSiteAuthTargetSite?.name);
       const siteUrl = asTrimmedString(started?.targetSiteUrl)
         || asTrimmedString(selectedSiteAuthTargetSite?.url);
-      openOAuthPopup(`site-auth-target-${provider.provider}`, started.authorizationUrl);
+      navigatePreparedOAuthPopup(popup, popupProvider, started.authorizationUrl);
       setSiteAuthBrowserCaptureContext({
         provider: provider.provider,
         providerLabel,
@@ -1573,6 +1665,7 @@ export default function OAuthManagement() {
       setSiteAuthBrowserCaptureOpen(true);
       setSessionInfo(`已打开 ${siteName || siteUrl || '目标中转站'} 登录窗口。登录完成后在这里保存 ${providerLabel} 目标站 Session。`);
     } catch (error: any) {
+      closePreparedOAuthPopup(popup.popup);
       setSessionError(error?.message || '无法打开目标站登录窗口');
     } finally {
       setActionLoadingKey('');

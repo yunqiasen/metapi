@@ -3,6 +3,10 @@ import { db, schema, runtimeDbDialect } from "../../db/index.js";
 import { insertAndGetById } from "../../db/insertHelpers.js";
 import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { refreshBalance } from "../../services/balanceService.js";
+import {
+  refreshAccountCredential,
+  refreshAllAccountCredentials,
+} from "../../services/accountCredentialRefreshService.js";
 import { getAdapter } from "../../services/platforms/index.js";
 import {
   convergeAccountMutation,
@@ -2207,6 +2211,36 @@ export async function accountsRoutes(app: FastifyInstance) {
       await db.delete(schema.accounts).where(eq(schema.accounts.id, id)).run();
       await rebuildRoutesBestEffort();
       return { success: true };
+    },
+  );
+
+  app.post("/api/accounts/credentials/refresh", async () => {
+    const result = await refreshAllAccountCredentials();
+    return {
+      success: true,
+      total: result.total,
+      results: result.results,
+      summary: {
+        success: result.success,
+        skipped: result.skipped,
+        failed: result.failed,
+      },
+    };
+  });
+
+  app.post<{ Params: { id: string } }>(
+    "/api/accounts/:id/credential/refresh",
+    async (request, reply) => {
+      const id = Number.parseInt(request.params.id, 10);
+      if (!Number.isFinite(id) || id <= 0) {
+        return reply.code(400).send({ success: false, message: "账号 ID 无效" });
+      }
+
+      const result = await refreshAccountCredential(id);
+      if (result.status === "failed" && result.message === "账号不存在") {
+        return reply.code(404).send({ success: false, ...result });
+      }
+      return { success: true, ...result };
     },
   );
 

@@ -58,7 +58,7 @@ function walkFiles(root: string, currentDir = root): string[] {
   const files: string[] = [];
 
   for (const entry of entries) {
-    if (entry === '.git' || entry === 'node_modules' || entry === 'dist' || entry === 'coverage') {
+    if (entry === '.git' || entry === 'node_modules' || entry === 'dist' || entry === 'coverage' || entry === 'data') {
       continue;
     }
 

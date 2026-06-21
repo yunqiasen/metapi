@@ -1275,14 +1275,120 @@ export default function Accounts() {
     },
   };
 
-  const resolveRuntimeHealth = (account: any) => {
-    if (account.status === "expired") {
+  const credentialHealthMap: Record<
+    string,
+    {
+      label: string;
+      cls: string;
+      dotClass: string;
+      pulse: boolean;
+    }
+  > = {
+    healthy: {
+      label: "凭证正常",
+      cls: "badge-success",
+      dotClass: "status-dot-success",
+      pulse: false,
+    },
+    expired: {
+      label: "已过期",
+      cls: "badge-error",
+      dotClass: "status-dot-error",
+      pulse: true,
+    },
+    disabled: {
+      label: "已禁用",
+      cls: "badge-muted",
+      dotClass: "status-dot-muted",
+      pulse: false,
+    },
+    missing: {
+      label: "凭证缺失",
+      cls: "badge-error",
+      dotClass: "status-dot-error",
+      pulse: true,
+    },
+  };
+
+  const resolveCredentialHealth = (account: any) => {
+    if (account.status === "disabled" || account.site?.status === "disabled") {
       return {
-        ...runtimeHealthMap.unhealthy,
-        label: "已过期",
-        reason: account.runtimeHealth?.reason || "连接凭证已过期，请更新凭证",
+        ...credentialHealthMap.disabled,
+        reason: "账号或站点已禁用",
       };
     }
+    if (account.status === "expired") {
+      return {
+        ...credentialHealthMap.expired,
+        reason: "凭证已过期，点击刷新凭证或重新登录",
+      };
+    }
+    const hasCredential =
+      typeof account?.accessToken === "string" &&
+      account.accessToken.trim().length > 0;
+    if (!hasCredential) {
+      return {
+        ...credentialHealthMap.missing,
+        reason: "未保存可用凭证",
+      };
+    }
+    const mode = resolveAccountCredentialMode(account);
+    return {
+      ...credentialHealthMap.healthy,
+      reason: mode === "apikey" ? "API Key 已保存" : "Session 已保存",
+    };
+  };
+
+  const renderHealthStatus = (
+    health: {
+      label: string;
+      cls: string;
+      dotClass: string;
+      pulse: boolean;
+      reason: string;
+    },
+    maxWidth = 200,
+  ) => (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+      }}
+    >
+      <span
+        className={`badge ${health.cls}`}
+        style={{
+          fontSize: 11,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          width: "fit-content",
+        }}
+      >
+        <span
+          className={`status-dot ${health.dotClass} ${health.pulse ? "animate-pulse-dot" : ""}`}
+          style={{ marginRight: 0 }}
+        />
+        {health.label}
+      </span>
+      <span
+        style={{
+          fontSize: 11,
+          color: "var(--color-text-muted)",
+          maxWidth,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+        data-tooltip={health.reason}
+      >
+        {health.reason}
+      </span>
+    </div>
+  );
+
+  const resolveRuntimeHealth = (account: any) => {
     const capabilities = resolveAccountCapabilities(account);
     const fallbackState =
       account.status === "disabled" || account.site?.status === "disabled"
@@ -1335,6 +1441,43 @@ export default function Accounts() {
       toast.error(e.message || "刷新账号状态失败");
     } finally {
       setActionLoading((s) => ({ ...s, "health-refresh": false }));
+    }
+  };
+
+  const handleRefreshAccountCredential = async (accountId: number) => {
+    const key = `credential-refresh-${accountId}`;
+    setActionLoading((state) => ({ ...state, [key]: true }));
+    try {
+      const res = await api.refreshAccountCredential(accountId);
+      if (res?.status === "success") {
+        toast.success(res.message || "凭证已刷新");
+      } else if (res?.status === "skipped") {
+        toast.info(res.message || "该账号暂不支持刷新凭证");
+      } else {
+        toast.error(res?.message || "刷新凭证失败");
+      }
+      load(true);
+    } catch (e: any) {
+      toast.error(e.message || "刷新凭证失败");
+    } finally {
+      setActionLoading((state) => ({ ...state, [key]: false }));
+    }
+  };
+
+  const handleRefreshAllCredentials = async () => {
+    const key = "credential-refresh-all";
+    setActionLoading((state) => ({ ...state, [key]: true }));
+    try {
+      const res = await api.refreshAllAccountCredentials();
+      const summary = res?.summary || res;
+      toast.success(
+        `刷新凭证完成：成功 ${summary?.success ?? 0}，跳过 ${summary?.skipped ?? 0}，失败 ${summary?.failed ?? 0}`,
+      );
+      load(true);
+    } catch (e: any) {
+      toast.error(e.message || "刷新凭证失败");
+    } finally {
+      setActionLoading((state) => ({ ...state, [key]: false }));
     }
   };
 
@@ -1800,6 +1943,21 @@ export default function Accounts() {
                   </button>
                 )}
                 <button
+                  data-testid="accounts-refresh-all-credentials"
+                  onClick={handleRefreshAllCredentials}
+                  disabled={actionLoading["credential-refresh-all"]}
+                  className="btn btn-soft-primary"
+                >
+                  {actionLoading["credential-refresh-all"] ? (
+                    <>
+                      <span className="spinner spinner-sm" />
+                      {tr("刷新凭证中...")}
+                    </>
+                  ) : (
+                    tr("刷新凭证")
+                  )}
+                </button>
+                <button
                   onClick={handleRefreshRuntimeHealth}
                   disabled={actionLoading["health-refresh"]}
                   className="btn btn-soft-primary"
@@ -1915,6 +2073,25 @@ export default function Accounts() {
                 )}
               </button>
             )}
+            <button
+              data-testid="accounts-refresh-all-credentials-mobile"
+              onClick={async () => {
+                setShowMobileTools(false);
+                await handleRefreshAllCredentials();
+              }}
+              disabled={actionLoading["credential-refresh-all"]}
+              className="btn btn-ghost"
+              style={{ border: "1px solid var(--color-border)" }}
+            >
+              {actionLoading["credential-refresh-all"] ? (
+                <>
+                  <span className="spinner spinner-sm" />
+                  {tr("刷新凭证中...")}
+                </>
+              ) : (
+                tr("刷新凭证")
+              )}
+            </button>
             <button
               onClick={async () => {
                 setShowMobileTools(false);
@@ -3447,46 +3624,12 @@ export default function Accounts() {
                         }
                       >
                         <MobileField
+                          label="凭证健康状态"
+                          value={renderHealthStatus(resolveCredentialHealth(a), 240)}
+                        />
+                        <MobileField
                           label="运行健康状态"
-                          value={
-                            <div
-                              style={{
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: 4,
-                              }}
-                            >
-                              <span
-                                className={`badge ${health.cls}`}
-                                style={{
-                                  fontSize: 11,
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 4,
-                                  width: "fit-content",
-                                }}
-                              >
-                                <span
-                                  className={`status-dot ${health.dotClass} ${health.pulse ? "animate-pulse-dot" : ""}`}
-                                  style={{ marginRight: 0 }}
-                                />
-                                {health.label}
-                              </span>
-                              <span
-                                style={{
-                                  fontSize: 11,
-                                  color: "var(--color-text-muted)",
-                                  maxWidth: 240,
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                                data-tooltip={health.reason}
-                              >
-                                {health.reason}
-                              </span>
-                            </div>
-                          }
+                          value={renderHealthStatus(health, 240)}
                         />
                         <MobileField
                           label="余额"
@@ -3641,23 +3784,43 @@ export default function Accounts() {
                                 </>
                               )}
                               {capabilities.canRefreshBalance && (
-                                <button
-                                  onClick={() =>
-                                    withLoading(
-                                      `refresh-${a.id}`,
-                                      () => api.refreshBalance(a.id),
-                                      "余额已刷新",
-                                    )
-                                  }
-                                  disabled={actionLoading[`refresh-${a.id}`]}
-                                  className="btn btn-link btn-link-primary"
-                                >
-                                  {actionLoading[`refresh-${a.id}`] ? (
-                                    <span className="spinner spinner-sm" />
-                                  ) : (
-                                    "刷新"
-                                  )}
-                                </button>
+                                <>
+                                  <button
+                                    data-testid={`account-refresh-credential-${a.id}`}
+                                    onClick={() =>
+                                      handleRefreshAccountCredential(a.id)
+                                    }
+                                    disabled={
+                                      actionLoading[`credential-refresh-${a.id}`]
+                                    }
+                                    className="btn btn-link btn-link-primary"
+                                  >
+                                    {actionLoading[
+                                      `credential-refresh-${a.id}`
+                                    ] ? (
+                                      <span className="spinner spinner-sm" />
+                                    ) : (
+                                      "刷新凭证"
+                                    )}
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      withLoading(
+                                        `refresh-${a.id}`,
+                                        () => api.refreshBalance(a.id),
+                                        "余额已刷新",
+                                      )
+                                    }
+                                    disabled={actionLoading[`refresh-${a.id}`]}
+                                    className="btn btn-link btn-link-primary"
+                                  >
+                                    {actionLoading[`refresh-${a.id}`] ? (
+                                      <span className="spinner spinner-sm" />
+                                    ) : (
+                                      "刷新"
+                                    )}
+                                  </button>
+                                </>
                               )}
                               {capabilities.canCheckin && (
                                 <button
@@ -3726,6 +3889,7 @@ export default function Accounts() {
                       </th>
                       <th>连接名称</th>
                       <th>站点</th>
+                      <th>凭证健康状态</th>
                       <th>运行健康状态</th>
                       <th>余额</th>
                       <th>已用</th>
@@ -3798,48 +3962,10 @@ export default function Accounts() {
                             />
                           </td>
                           <td>
-                            {(() => {
-                              const health = resolveRuntimeHealth(a);
-                              return (
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    flexDirection: "column",
-                                    gap: 4,
-                                  }}
-                                >
-                                  <span
-                                    className={`badge ${health.cls}`}
-                                    style={{
-                                      fontSize: 11,
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      gap: 4,
-                                      width: "fit-content",
-                                    }}
-                                  >
-                                    <span
-                                      className={`status-dot ${health.dotClass} ${health.pulse ? "animate-pulse-dot" : ""}`}
-                                      style={{ marginRight: 0 }}
-                                    />
-                                    {health.label}
-                                  </span>
-                                  <span
-                                    style={{
-                                      fontSize: 11,
-                                      color: "var(--color-text-muted)",
-                                      maxWidth: 200,
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}
-                                    data-tooltip={health.reason}
-                                  >
-                                    {health.reason}
-                                  </span>
-                                </div>
-                              );
-                            })()}
+                            {renderHealthStatus(resolveCredentialHealth(a))}
+                          </td>
+                          <td>
+                            {renderHealthStatus(resolveRuntimeHealth(a))}
                           </td>
                           <td style={{ fontVariantNumeric: "tabular-nums" }}>
                             <div
@@ -3965,23 +4091,43 @@ export default function Accounts() {
                                 </>
                               )}
                               {capabilities.canRefreshBalance && (
-                                <button
-                                  onClick={() =>
-                                    withLoading(
-                                      `refresh-${a.id}`,
-                                      () => api.refreshBalance(a.id),
-                                      "余额已刷新",
-                                    )
-                                  }
-                                  disabled={actionLoading[`refresh-${a.id}`]}
-                                  className="btn btn-link btn-link-primary"
-                                >
-                                  {actionLoading[`refresh-${a.id}`] ? (
-                                    <span className="spinner spinner-sm" />
-                                  ) : (
-                                    "刷新"
-                                  )}
-                                </button>
+                                <>
+                                  <button
+                                    data-testid={`account-refresh-credential-${a.id}`}
+                                    onClick={() =>
+                                      handleRefreshAccountCredential(a.id)
+                                    }
+                                    disabled={
+                                      actionLoading[`credential-refresh-${a.id}`]
+                                    }
+                                    className="btn btn-link btn-link-primary"
+                                  >
+                                    {actionLoading[
+                                      `credential-refresh-${a.id}`
+                                    ] ? (
+                                      <span className="spinner spinner-sm" />
+                                    ) : (
+                                      "刷新凭证"
+                                    )}
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      withLoading(
+                                        `refresh-${a.id}`,
+                                        () => api.refreshBalance(a.id),
+                                        "余额已刷新",
+                                      )
+                                    }
+                                    disabled={actionLoading[`refresh-${a.id}`]}
+                                    className="btn btn-link btn-link-primary"
+                                  >
+                                    {actionLoading[`refresh-${a.id}`] ? (
+                                      <span className="spinner spinner-sm" />
+                                    ) : (
+                                      "刷新"
+                                    )}
+                                  </button>
+                                </>
                               )}
                               <button
                                 onClick={() => openModelModal(a)}

@@ -12,6 +12,8 @@ const { apiMock } = vi.hoisted(() => ({
     getSites: vi.fn(),
     batchUpdateAccounts: vi.fn(),
     refreshAccountHealth: vi.fn(),
+    refreshAllAccountCredentials: vi.fn(),
+    refreshAccountCredential: vi.fn(),
     triggerCheckinAll: vi.fn(),
     getTask: vi.fn(),
   },
@@ -66,6 +68,15 @@ describe('Accounts batch actions', () => {
       failedItems: [],
     });
     apiMock.refreshAccountHealth.mockResolvedValue({ success: true });
+    apiMock.refreshAllAccountCredentials.mockResolvedValue({
+      success: true,
+      summary: { success: 1, skipped: 1, failed: 0 },
+    });
+    apiMock.refreshAccountCredential.mockResolvedValue({
+      success: true,
+      status: 'success',
+      refreshed: true,
+    });
     apiMock.triggerCheckinAll.mockResolvedValue({
       success: true,
       queued: true,
@@ -118,6 +129,69 @@ describe('Accounts batch actions', () => {
         ids: [1, 2],
         action: 'refreshBalance',
       });
+    } finally {
+      root?.unmount();
+    }
+  });
+
+
+
+  it('shows credential health separately from runtime health', async () => {
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <MemoryRouter initialEntries={['/accounts']}>
+            <ToastProvider>
+              <Accounts />
+            </ToastProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushMicrotasks();
+
+      const text = collectText(root.root);
+      expect(text).toContain('凭证健康状态');
+      expect(text).toContain('运行健康状态');
+      expect(text).toContain('凭证正常');
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('shows credential refresh actions for all accounts and one account', async () => {
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <MemoryRouter initialEntries={['/accounts']}>
+            <ToastProvider>
+              <Accounts />
+            </ToastProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushMicrotasks();
+
+      const refreshAllCredentialButton = root.root.find(
+        (node) => node.props['data-testid'] === 'accounts-refresh-all-credentials',
+      );
+      await act(async () => {
+        refreshAllCredentialButton.props.onClick();
+      });
+      await flushMicrotasks();
+      expect(apiMock.refreshAllAccountCredentials).toHaveBeenCalledTimes(1);
+
+      const accountCredentialButtons = root.root.findAll(
+        (node) => node.props['data-testid'] === 'account-refresh-credential-1',
+      );
+      expect(accountCredentialButtons.length).toBeGreaterThan(0);
+      await act(async () => {
+        await accountCredentialButtons[0]!.props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(apiMock.refreshAccountCredential).toHaveBeenCalledWith(1);
     } finally {
       root?.unmount();
     }

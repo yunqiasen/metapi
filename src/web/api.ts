@@ -1020,6 +1020,16 @@ export const api = {
     }),
   refreshBalance: (id: number) =>
     request(`/api/accounts/${id}/balance`, { method: "POST" }),
+  refreshAccountCredential: (id: number) =>
+    request(`/api/accounts/${id}/credential/refresh`, {
+      method: "POST",
+      timeoutMs: 180_000,
+    }),
+  refreshAllAccountCredentials: () =>
+    request("/api/accounts/credentials/refresh", {
+      method: "POST",
+      timeoutMs: 300_000,
+    }),
   getAccountModels: (id: number) => request(`/api/accounts/${id}/models`),
   addAccountAvailableModels: (accountId: number, models: string[]) =>
     request(`/api/accounts/${accountId}/models/manual`, {

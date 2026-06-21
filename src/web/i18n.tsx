@@ -50,6 +50,8 @@ const zhToEn: Record<string, string> = {
   '全部签到': 'Check In All',
   '签到中...': 'Checking In...',
   '刷新状态中...': 'Refreshing...',
+  '刷新凭证': 'Refresh Credentials',
+  '刷新凭证中...': 'Refreshing Credentials...',
   '刷新账户状态': 'Refresh Account Status',
   '+ 添加账号': '+ Add Account',
   '路由': 'Routes',

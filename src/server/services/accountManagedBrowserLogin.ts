@@ -297,9 +297,9 @@ export async function refreshManagedAccountLogin(
   if (!providerId || !isManagedBrowserEnabled(account)) return null;
 
   const relogin = getAutoReloginConfig(account.extraConfig);
-  if (!relogin) return null;
-  const password = decryptAccountPassword(relogin.passwordCipher);
-  if (!password) return null;
+  const password = relogin
+    ? decryptAccountPassword(relogin.passwordCipher)
+    : null;
 
   const provider = ANY_AGENT_PROVIDER_CONFIGS[providerId];
   const baseUrl = normalizeBaseUrl(site.url);
@@ -318,11 +318,11 @@ export async function refreshManagedAccountLogin(
     await page.waitForLoadState('networkidle', { timeout: 8_000 }).catch(() => {});
 
     let userInfo = await readUserSelfFromPage(page, provider);
-    if (!userInfo) {
+    if (!userInfo && relogin && password) {
       await loginWithPasswordForm(page, relogin.username, password);
       userInfo = await readUserSelfFromPage(page, provider);
     }
-    if (!userInfo) throw new Error('managed browser login verification failed');
+    if (!userInfo) return null;
 
     const accessToken = await collectAccountCookieHeader(context, baseUrl);
     if (!accessToken) throw new Error('managed browser login cookie not found');

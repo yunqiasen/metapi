@@ -491,6 +491,8 @@ export const zhToEnSupplemental: Record<string, string> = {
   '刷新账号状态失败': 'Failed to refresh account status',
   '刷新账户状态': 'Refresh account status',
   '刷新状态中...': 'Refreshing status...',
+  '刷新凭证': 'Refresh credentials',
+  '刷新凭证中...': 'Refreshing credentials...',
   '思考中...': 'Thinking...',
   '松开以导入文件': 'Release to import file',
   '搜索': 'Search',

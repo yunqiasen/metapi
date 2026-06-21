@@ -47,6 +47,19 @@ describe('repo drift check', () => {
     ]));
   });
 
+  it('ignores local runtime data directories', () => {
+    const root = mkdtempSync(join(tmpdir(), 'metapi-repo-drift-data-'));
+    writeWorkspaceFiles(root, {
+      'data/browser-profiles/accounts/agentrouter/60/src/server/transformers/decoy.ts':
+        "import { helper } from '../../../../../../src/server/routes/proxy/helper.js';\n",
+      'src/server/transformers/openai/good.ts': 'export const ok = true;\n',
+    });
+
+    const report = runRepoDriftCheck({ root });
+
+    expect(report.violations).toEqual([]);
+  });
+
   it('keeps the current repository within the first-wave ratchet', () => {
     const report = runRepoDriftCheck({ root: process.cwd() });
     expect(report.violations).toEqual([]);

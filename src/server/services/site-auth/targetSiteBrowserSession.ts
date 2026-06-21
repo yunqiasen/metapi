@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { connect, createServer } from 'node:net';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, rm, unlink } from 'node:fs/promises';
+import { cp, mkdir, rename, rm, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { BrowserContext, Cookie, Page, Response as PlaywrightResponse } from 'playwright-core';
 import { config } from '../../config.js';
@@ -22,6 +22,8 @@ const DEFAULT_NOVNC_PORT = 6080;
 const DEFAULT_VNC_PORT = 5900;
 const NOVNC_READY_DELAY_MS = 800;
 const CHROMIUM_PROFILE_LOCK_FILES = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'] as const;
+const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
+const PROFILE_FLUSH_TIMEOUT_MS = 5_000;
 const FALLBACK_SCREENSHOT_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAABQAAAANECAYAAABd2Q4SAAAAAXNSR0IArs4c6QAAIABJREFUeJzt3TEOwjAMQNFc/v9PZgYGAkKkC9tOaZ0E0iRbswYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwX+oDAAFwB8kAAAAASUVORK5CYII=',
   'base64',
@@ -171,6 +173,66 @@ function resolveNoVncWebDir(): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+function waitForChildProcessExit(process: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (process.exitCode !== null || process.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolveExit) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolveExit(false);
+    }, timeoutMs);
+    timer.unref?.();
+    const onExit = () => {
+      cleanup();
+      resolveExit(true);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      process.off('exit', onExit);
+    };
+    process.once('exit', onExit);
+  });
+}
+
+async function closeStandaloneBrowser(session: TargetSiteBrowserSession): Promise<void> {
+  const browserProcess = session.browserProcess;
+  if (!browserProcess) return;
+
+  if (browserProcess.exitCode === null && session.debuggingPort) {
+    try {
+      const chromium = await loadChromiumBrowserType();
+      const browser = await chromium.connectOverCDP(`http://127.0.0.1:${session.debuggingPort}`);
+      await browser.close();
+      if (await waitForChildProcessExit(browserProcess, BROWSER_CLOSE_TIMEOUT_MS)) return;
+    } catch {}
+  }
+
+  try {
+    if (browserProcess.exitCode === null) browserProcess.kill('SIGTERM');
+  } catch {}
+  if (await waitForChildProcessExit(browserProcess, BROWSER_CLOSE_TIMEOUT_MS)) return;
+
+  try {
+    if (browserProcess.exitCode === null) browserProcess.kill('SIGKILL');
+  } catch {}
+  await waitForChildProcessExit(browserProcess, 1_000).catch(() => false);
+}
+
+async function waitForProfileFlush(profileDir: string): Promise<void> {
+  const deadline = Date.now() + PROFILE_FLUSH_TIMEOUT_MS;
+  const cookiePath = join(profileDir, 'Default', 'Cookies');
+  const preferencesPath = join(profileDir, 'Default', 'Preferences');
+  while (Date.now() < deadline) {
+    if (existsSync(cookiePath) || existsSync(preferencesPath)) return;
+    await sleep(150);
+  }
+}
+
+function assertPersistableTargetBrowserProfile(profileDir: string): void {
+  const cookiePath = join(profileDir, 'Default', 'Cookies');
+  if (existsSync(cookiePath)) return;
+  throw new Error('浏览器 Profile 未完整保存，请重新登录后再导入');
 }
 
 async function isTcpPortOpen(port: number): Promise<boolean> {
@@ -589,16 +651,16 @@ function scheduleSessionCleanup(session: TargetSiteBrowserSession): void {
 }
 
 async function closeSessionBrowser(session: TargetSiteBrowserSession): Promise<void> {
-  releaseBrowserDisplay(`target-site:${session.state}`);
   try {
     session.stopCaptchaAutoConfirm?.();
   } catch {}
   try {
     await session.context?.close();
   } catch {}
-  try {
-    if (session.browserProcess && session.browserProcess.exitCode === null) session.browserProcess.kill('SIGTERM');
-  } catch {}
+  if (session.browserMode === 'standalone') {
+    await closeStandaloneBrowser(session);
+  }
+  releaseBrowserDisplay(`target-site:${session.state}`);
   scheduleSessionCleanup(session);
 }
 
@@ -1181,9 +1243,21 @@ export async function markTargetSiteBrowserSessionSaved(state: string): Promise<
 export async function persistTargetSiteBrowserProfile(state: string, destinationProfileDir: string): Promise<void> {
   const session = getSession(state);
   await closeSessionBrowser(session);
-  await rm(destinationProfileDir, { recursive: true, force: true });
-  await mkdir(dirname(destinationProfileDir), { recursive: true });
-  await cp(session.profileDir, destinationProfileDir, { recursive: true });
+  await waitForProfileFlush(session.profileDir);
+  assertPersistableTargetBrowserProfile(session.profileDir);
+
+  const tempProfileDir = `${destinationProfileDir}.tmp-${randomUUID()}`;
+  await rm(tempProfileDir, { recursive: true, force: true });
+  try {
+    await mkdir(dirname(destinationProfileDir), { recursive: true });
+    await cp(session.profileDir, tempProfileDir, { recursive: true });
+    assertPersistableTargetBrowserProfile(tempProfileDir);
+    await rm(destinationProfileDir, { recursive: true, force: true });
+    await rename(tempProfileDir, destinationProfileDir);
+  } catch (error) {
+    await rm(tempProfileDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 export async function saveTargetSiteBrowserSession(state: string): Promise<TargetSiteBrowserSaveResult> {

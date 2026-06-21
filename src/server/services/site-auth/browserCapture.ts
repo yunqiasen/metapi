@@ -27,7 +27,7 @@ function parseLinuxDoCookie(text: string, defaultProvider?: SiteAuthProviderId):
     provider: 'linuxdo',
     credentialType: 'cookie',
     payload: { cookie },
-    metadata: { captureMode: 'browser_assisted' },
+    metadata: { captureMode: 'manual_paste' },
   };
 }
 

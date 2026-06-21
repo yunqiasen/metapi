@@ -322,7 +322,7 @@ const HAS_HAN_RE = /[\u3400-\u9fff]/;
 const HAN_BLOCK_RE = /[\u3400-\u9fff]+/g;
 const LATIN_OR_DIGIT_RE = /[A-Za-z0-9]/;
 const TRANSLATABLE_ATTRS = ['placeholder', 'title', 'aria-label'] as const;
-const SKIP_PARENT_SELECTOR = 'script, style, code, pre, kbd, samp';
+const SKIP_PARENT_SELECTOR = 'script, style, code, pre, kbd, samp, [data-i18n-skip="true"]';
 const zhToEnPhrases = Object.entries(zhToEn).sort((a, b) => b[0].length - a[0].length);
 const textNodeOriginalMap = new WeakMap<Text, string>();
 const elementAttrOriginalMap = new WeakMap<Element, Map<string, string>>();
@@ -475,6 +475,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
       if (node.nodeType !== Node.ELEMENT_NODE) return;
 
       const el = node as Element;
+      if (el.matches(SKIP_PARENT_SELECTOR)) return;
       processElementAttrs(el);
       for (const child of Array.from(el.childNodes)) {
         walk(child);

@@ -1,5 +1,6 @@
 import type { PlatformAdapter } from './base.js';
 import { AnyRouterAdapter } from './anyrouter.js';
+import { AgentRouterAdapter } from './agentrouter.js';
 import { NewApiAdapter } from './newApi.js';
 import { OneApiAdapter } from './oneApi.js';
 import { VeloeraAdapter } from './veloera.js';
@@ -26,6 +27,7 @@ const adapters: PlatformAdapter[] = [
   new AntigravityAdapter(),
   new CliProxyApiAdapter(),
   new AnyRouterAdapter(),
+  new AgentRouterAdapter(),
   new DoneHubAdapter(),
   new OneHubAdapter(),
   new VeloeraAdapter(),

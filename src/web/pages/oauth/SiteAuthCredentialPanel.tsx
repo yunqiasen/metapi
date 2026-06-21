@@ -1,7 +1,6 @@
 import type {
   SiteAuthCredentialDecryptabilityResponse,
   SiteAuthCredentialInfo,
-  SiteAuthCredentialTargetSitesResponse,
   SiteAuthProviderInfo,
 } from '../../api.js';
 
@@ -10,15 +9,26 @@ type SiteAuthCredentialPanelProps = {
   credentials: SiteAuthCredentialInfo[];
   decryptability?: SiteAuthCredentialDecryptabilityResponse | null;
   loaded: boolean;
-  onImportCredential: (provider: string) => void;
-  onAuthorizeCredential: () => void;
+  authorizingProvider?: string | null;
+  onAuthorizeCredential: (provider: string) => void;
   onVerifyCredential: (credentialId: number) => void;
   onDeleteCredential: (credentialId: number) => void;
-  onLoadTargetSites: (credentialId: number) => void;
   verifyingCredentialId?: number | null;
-  targetSitesByCredentialId?: Record<number, SiteAuthCredentialTargetSitesResponse | undefined>;
-  loadingTargetSitesCredentialId?: number | null;
 };
+
+function resolveProviderLabel(provider: string, fallback?: string): string {
+  if (provider === 'linuxdo') return 'L 站（LinuxDO）';
+  if (provider === 'github') return 'GitHub';
+  if (provider === 'google') return 'Google';
+  return fallback || provider;
+}
+
+function resolveProviderButtonLabel(provider: string, fallback?: string): string {
+  const label = resolveProviderLabel(provider, fallback);
+  return provider === 'linuxdo'
+    ? `打开 ${label}登录并保存凭证`
+    : `打开 ${label} 登录并保存凭证`;
+}
 
 function resolveCredentialTypeLabel(value: string): string {
   if (value === 'cookie') return 'Cookie';
@@ -43,14 +53,11 @@ export default function SiteAuthCredentialPanel({
   credentials,
   decryptability = null,
   loaded,
-  onImportCredential,
+  authorizingProvider = null,
   onAuthorizeCredential,
   onVerifyCredential,
   onDeleteCredential,
-  onLoadTargetSites,
   verifyingCredentialId,
-  targetSitesByCredentialId = {},
-  loadingTargetSitesCredentialId = null,
 }: SiteAuthCredentialPanelProps) {
   const visibleProviders = providers.length > 0
     ? providers
@@ -66,24 +73,24 @@ export default function SiteAuthCredentialPanel({
         <div>
           <div className="oauth-workbench-title">第三方登录凭证</div>
           <div className="oauth-workbench-meta">
-            保存 LinuxDO Cookie 或 GitHub / Google OAuth 登录凭证，后续连接流程可复用。
+            保存 LinuxDO / GitHub / Google 的网页登录凭证，后续连接流程可复用。
           </div>
-        </div>
-        <div className="oauth-site-auth-import-actions">
-          <button type="button" className="btn btn-primary" onClick={onAuthorizeCredential}>
-            授权添加凭证
-          </button>
-          <button type="button" className="btn btn-ghost oauth-outline-button" onClick={() => onImportCredential('linuxdo')}>
-            导入 LinuxDO Cookie
-          </button>
         </div>
       </div>
 
-      <div className="oauth-auth-provider-strip" aria-label="计划支持的第三方登录 Provider">
+      <div className="oauth-auth-provider-strip" aria-label="第三方登录 Provider">
         {visibleProviders.map((provider) => (
-          <span key={provider.provider} className="oauth-auth-provider-chip">
-            {provider.label}
-          </span>
+          <button
+            key={provider.provider}
+            type="button"
+            className="btn btn-primary oauth-auth-provider-chip"
+            onClick={() => onAuthorizeCredential(provider.provider)}
+            disabled={authorizingProvider === provider.provider}
+          >
+            {authorizingProvider === provider.provider
+              ? '启动中...'
+              : resolveProviderButtonLabel(provider.provider, provider.label)}
+          </button>
         ))}
       </div>
 
@@ -116,7 +123,7 @@ export default function SiteAuthCredentialPanel({
           </svg>
           <div className="empty-state-title">暂无第三方登录凭证</div>
           <div className="empty-state-desc">
-            GitHub / Google 点“授权添加凭证”自动保存；LinuxDO 用“导入 LinuxDO Cookie”。
+            LinuxDO / GitHub / Google 点对应登录按钮会打开 Metapi 小窗；登录完成后点击保存。
           </div>
         </div>
       ) : (
@@ -151,34 +158,12 @@ export default function SiteAuthCredentialPanel({
                 </button>
                 <button
                   type="button"
-                  className="btn btn-link btn-link-info oauth-site-auth-target-sites"
-                  onClick={() => onLoadTargetSites(credential.id)}
-                  disabled={loadingTargetSitesCredentialId === credential.id}
-                >
-                  {loadingTargetSitesCredentialId === credential.id ? '加载中...' : '可用站点'}
-                </button>
-                <button
-                  type="button"
                   className="btn btn-link btn-link-danger oauth-site-auth-delete"
                   onClick={() => onDeleteCredential(credential.id)}
                 >
                   删除
                 </button>
               </div>
-              {targetSitesByCredentialId[credential.id] ? (
-                <div className="oauth-site-auth-target-sites-list">
-                  {targetSitesByCredentialId[credential.id]?.items.length ? (
-                    targetSitesByCredentialId[credential.id]?.items.map((site) => (
-                      <div key={site.id} className="oauth-site-auth-target-site">
-                        <span className="oauth-cell-primary">{site.name}</span>
-                        <span className="badge badge-muted">{site.platform}</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="oauth-cell-tertiary">暂未发现可复用该凭证登录的站点。</div>
-                  )}
-                </div>
-              ) : null}
             </div>
           ))}
         </div>

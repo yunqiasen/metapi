@@ -9,6 +9,7 @@ services:
     ports:
       - "${FRONTEND_PORT:-4000}:${FRONTEND_PORT:-4000}"
       - "${BACKEND_DEBUG_PORT:-4001}:${BACKEND_PORT:-4001}"
+      - "${NOVNC_PORT:-6080}:${SITE_AUTH_NOVNC_PORT:-6080}"
     volumes:
       - .:/app
       - metapi_node_modules:/app/node_modules
@@ -23,6 +24,12 @@ services:
       PORT: ${BACKEND_PORT:-4001}
       HOST: 0.0.0.0
       DATA_DIR: /app/data
+      SITE_AUTH_BROWSER_EXECUTABLE_PATH: ${SITE_AUTH_BROWSER_EXECUTABLE_PATH:-/usr/bin/chromium}
+      SITE_AUTH_BROWSER_PROXY_URL: ${SITE_AUTH_BROWSER_PROXY_URL:-}
+      SITE_AUTH_BROWSER_HEADLESS: ${SITE_AUTH_BROWSER_HEADLESS:-false}
+      SITE_AUTH_BROWSER_DISPLAY: ${SITE_AUTH_BROWSER_DISPLAY:-:99}
+      SITE_AUTH_NOVNC_PORT: ${SITE_AUTH_NOVNC_PORT:-6080}
+      SITE_AUTH_VNC_PORT: ${SITE_AUTH_VNC_PORT:-5900}
       TZ: ${TZ:-Asia/Shanghai}
       VITE_DEV_HOST: 0.0.0.0
       VITE_FRONTEND_PORT: ${FRONTEND_PORT:-4000}

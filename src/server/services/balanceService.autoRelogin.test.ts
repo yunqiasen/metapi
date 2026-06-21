@@ -11,6 +11,7 @@ const insertValuesMock = vi.fn();
 const reportTokenExpiredMock = vi.fn();
 const sendNotificationMock = vi.fn();
 const decryptPasswordMock = vi.fn();
+const refreshManagedAccountLoginMock = vi.fn();
 const setAccountRuntimeHealthMock = vi.fn();
 const extractRuntimeHealthMock = vi.fn();
 const undiciFetchMock = vi.fn();
@@ -74,6 +75,10 @@ vi.mock('./accountCredentialService.js', () => ({
   decryptAccountPassword: (...args: unknown[]) => decryptPasswordMock(...args),
 }));
 
+vi.mock('./accountManagedBrowserLogin.js', () => ({
+  refreshManagedAccountLogin: (...args: unknown[]) => refreshManagedAccountLoginMock(...args),
+}));
+
 vi.mock('./accountHealthService.js', () => ({
   setAccountRuntimeHealth: (...args: unknown[]) => setAccountRuntimeHealthMock(...args),
   extractRuntimeHealth: (...args: unknown[]) => extractRuntimeHealthMock(...args),
@@ -93,6 +98,7 @@ describe('balanceService auto relogin', () => {
     reportTokenExpiredMock.mockReset();
     sendNotificationMock.mockReset();
     decryptPasswordMock.mockReset();
+    refreshManagedAccountLoginMock.mockReset();
     setAccountRuntimeHealthMock.mockReset();
     extractRuntimeHealthMock.mockReset();
     undiciFetchMock.mockReset();
@@ -102,6 +108,52 @@ describe('balanceService auto relogin', () => {
       ok: false,
       json: async () => ({}),
     });
+  });
+
+  it('uses managed browser profile relogin for AgentRouter balance refresh and retries with refreshed user id', async () => {
+    selectAllMock.mockReturnValue([
+      {
+        accounts: {
+          id: 31,
+          username: 'agent-main',
+          accessToken: 'session=stale; acw_tc=old',
+          status: 'active',
+          extraConfig: JSON.stringify({
+            platformUserId: 3101,
+            credentialMode: 'session',
+            managedBrowserProfile: { enabled: true },
+            autoRelogin: { username: 'agent@example.com', passwordCipher: 'cipher' },
+          }),
+        },
+        sites: {
+          id: 31,
+          name: 'AgentRouter',
+          url: 'https://agentrouter.org',
+          platform: 'agentrouter',
+        },
+      },
+    ]);
+
+    adapterMock.getBalance
+      .mockRejectedValueOnce(new Error('HTTP 401: access token required'))
+      .mockResolvedValueOnce({ balance: 30, used: 2, quota: 32 });
+    refreshManagedAccountLoginMock.mockResolvedValueOnce({
+      accessToken: 'session=fresh-agent; acw_tc=waf-agent',
+      platformUserId: 3102,
+      extraConfig: JSON.stringify({ platformUserId: 3102 }),
+    });
+
+    const { refreshBalance } = await import('./balanceService.js');
+    const result = await refreshBalance(31);
+
+    expect(result).toEqual({ balance: 30, used: 2, quota: 32 });
+    expect(refreshManagedAccountLoginMock).toHaveBeenCalledTimes(1);
+    expect(adapterMock.login).not.toHaveBeenCalled();
+    expect(adapterMock.getBalance).toHaveBeenCalledTimes(2);
+    expect(adapterMock.getBalance.mock.calls[0][1]).toBe('session=stale; acw_tc=old');
+    expect(adapterMock.getBalance.mock.calls[0][2]).toBe(3101);
+    expect(adapterMock.getBalance.mock.calls[1][1]).toBe('session=fresh-agent; acw_tc=waf-agent');
+    expect(adapterMock.getBalance.mock.calls[1][2]).toBe(3102);
   });
 
   it('retries balance fetch once after successful auto relogin', async () => {

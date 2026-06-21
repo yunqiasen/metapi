@@ -158,6 +158,7 @@ export async function resolveUpstreamEndpointCandidates(
     hints?.requiresNativeResponsesFileUrl
     && sitePlatform !== 'claude'
     && sitePlatform !== 'anyrouter'
+    && sitePlatform !== 'agentrouter'
   ) {
     return ['responses'];
   }
@@ -192,7 +193,7 @@ export async function resolveUpstreamEndpointCandidates(
     hasRemoteDocumentUrl: false,
   };
 
-  if (sitePlatform === 'anyrouter') {
+  if (sitePlatform === 'anyrouter' || sitePlatform === 'agentrouter') {
     if (hasNonImageFileInput) {
       return finalizeCandidates(downstreamFormat === 'responses'
         ? ['responses', 'messages', 'chat']

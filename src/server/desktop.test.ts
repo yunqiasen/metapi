@@ -5,6 +5,7 @@ import { isPublicApiRoute, registerDesktopRoutes } from './desktop.js';
 describe('desktop server routes', () => {
   it('marks only the desktop health route as public', () => {
     expect(isPublicApiRoute('/api/desktop/health')).toBe(true);
+    expect(isPublicApiRoute('/api/site-auth/browser-captures/state-1')).toBe(false);
     expect(isPublicApiRoute('/api/stats/dashboard')).toBe(false);
   });
 

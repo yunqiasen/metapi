@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const accountCredentialModeSchema = z.enum(['auto', 'session', 'apikey']);
+const siteAuthProviderSchema = z.enum(['linuxdo', 'github', 'google']);
 
 const accountCreatePayloadSchema = z.object({
   siteId: z.number().int().positive(),
@@ -14,6 +15,12 @@ const accountCreatePayloadSchema = z.object({
   refreshToken: z.string().optional(),
   tokenExpiresAt: z.union([z.number(), z.string()]).optional(),
   skipModelFetch: z.boolean().optional(),
+  targetSiteAuth: z.object({
+    source: z.literal('target-site-browser-login').optional(),
+    provider: siteAuthProviderSchema.optional(),
+    credentialId: z.number().int().positive().optional(),
+    state: z.string().optional(),
+  }).optional(),
 }).passthrough();
 
 const accountUpdatePayloadSchema = z.object({
@@ -71,7 +78,8 @@ const accountSiteAuthLoginPayloadSchema = z.object({
 
 const accountSiteAuthBrowserLoginStartPayloadSchema = z.object({
   siteId: z.number().int().positive(),
-  provider: z.enum(['linuxdo', 'github', 'google']),
+  provider: siteAuthProviderSchema.optional(),
+  credentialId: z.number().int().positive().optional(),
 }).passthrough();
 
 const accountManualModelsPayloadSchema = z.object({

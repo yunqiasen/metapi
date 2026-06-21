@@ -111,4 +111,86 @@ describe('site auth credential verifier', () => {
       },
     });
   });
+
+  it('refreshes expired Google OAuth tokens before verification', async () => {
+    const created = await vault.createSiteAuthCredential({
+      provider: 'google',
+      label: 'Google 主账号',
+      credentialType: 'oauth_token',
+      payload: {
+        accessToken: 'expired-google-token',
+        refreshToken: 'google-refresh-token',
+      },
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    process.env.SITE_AUTH_GOOGLE_CLIENT_ID = 'google-client-id';
+    process.env.SITE_AUTH_GOOGLE_CLIENT_SECRET = 'google-client-secret';
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'fresh-google-token',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          scope: 'openid email profile',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ sub: 'google-sub-1', email: 'google@example.com', name: 'Google User' }),
+      });
+
+    const result = await verifier.verifySiteAuthCredential(created.id);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://oauth2.googleapis.com/token', expect.objectContaining({ method: 'POST' }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://www.googleapis.com/oauth2/v3/userinfo', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer fresh-google-token' }),
+    }));
+    expect(result).toMatchObject({ success: true, item: { status: 'active', expiresAt: expect.any(String) } });
+    const payload = await vault.getSiteAuthCredentialPayload(created.id);
+    expect(payload).toMatchObject({
+      accessToken: 'fresh-google-token',
+      refreshToken: 'google-refresh-token',
+      tokenType: 'Bearer',
+      expiresIn: 3600,
+    });
+  });
+
+  it('verifies LinuxDO OAuth tokens and stores identity metadata', async () => {
+    const created = await vault.createSiteAuthCredential({
+      provider: 'linuxdo',
+      label: 'LinuxDO 主账号',
+      credentialType: 'oauth_token',
+      payload: { accessToken: 'linuxdo-super-secret' },
+      status: 'invalid',
+      lastError: 'previous failure',
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 6789, username: 'linuxdo-user', name: 'LinuxDO User' }),
+    });
+
+    const result = await verifier.verifySiteAuthCredential(created.id);
+
+    expect(JSON.stringify(result)).not.toContain('linuxdo-super-secret');
+    expect(fetchMock).toHaveBeenCalledWith('https://connect.linux.do/api/user', expect.objectContaining({
+      headers: expect.objectContaining({
+        Authorization: 'Bearer linuxdo-super-secret',
+        Accept: 'application/json',
+      }),
+    }));
+    expect(result).toMatchObject({
+      success: true,
+      item: {
+        provider: 'linuxdo',
+        status: 'active',
+        subject: '6789',
+        username: 'linuxdo-user',
+        lastError: null,
+      },
+    });
+  });
 });

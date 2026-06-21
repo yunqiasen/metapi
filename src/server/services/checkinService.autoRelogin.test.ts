@@ -9,6 +9,7 @@ const notifyMock = vi.fn();
 const reportTokenExpiredMock = vi.fn();
 const refreshBalanceMock = vi.fn();
 const decryptPasswordMock = vi.fn();
+const refreshManagedAccountLoginMock = vi.fn();
 
 const selectAllMock = vi.fn();
 const insertValuesMock = vi.fn();
@@ -78,6 +79,10 @@ vi.mock('./accountCredentialService.js', () => ({
   decryptAccountPassword: (...args: unknown[]) => decryptPasswordMock(...args),
 }));
 
+vi.mock('./accountManagedBrowserLogin.js', () => ({
+  refreshManagedAccountLogin: (...args: unknown[]) => refreshManagedAccountLoginMock(...args),
+}));
+
 describe('checkinService auto relogin', () => {
   beforeEach(() => {
     adapterMock.checkin.mockReset();
@@ -86,9 +91,56 @@ describe('checkinService auto relogin', () => {
     reportTokenExpiredMock.mockReset();
     refreshBalanceMock.mockReset();
     decryptPasswordMock.mockReset();
+    refreshManagedAccountLoginMock.mockReset();
     selectAllMock.mockReset();
     insertValuesMock.mockReset();
     updateSetMock.mockReset();
+  });
+
+  it('uses managed browser profile relogin for AnyRouter accounts and retries with refreshed user id', async () => {
+    selectAllMock.mockReturnValue([
+      {
+        accounts: {
+          id: 21,
+          username: 'any-main',
+          accessToken: 'session=stale; acw_tc=old',
+          status: 'active',
+          extraConfig: JSON.stringify({
+            platformUserId: 1001,
+            credentialMode: 'session',
+            managedBrowserProfile: { enabled: true },
+            autoRelogin: { username: 'any@example.com', passwordCipher: 'cipher' },
+          }),
+        },
+        sites: {
+          id: 8,
+          name: 'AnyRouter',
+          url: 'https://anyrouter.top',
+          platform: 'anyrouter',
+        },
+      },
+    ]);
+
+    adapterMock.checkin
+      .mockResolvedValueOnce({ success: false, message: 'HTTP 401: access token required' })
+      .mockResolvedValueOnce({ success: true, message: 'checked in' });
+    refreshManagedAccountLoginMock.mockResolvedValueOnce({
+      accessToken: 'session=fresh; acw_tc=waf; cdn_sec_tc=seed; acw_sc__v2=solved',
+      platformUserId: 2202,
+      extraConfig: JSON.stringify({ platformUserId: 2202 }),
+    });
+
+    const { checkinAccount } = await import('./checkinService.js');
+    const result = await checkinAccount(21);
+
+    expect(result.success).toBe(true);
+    expect(refreshManagedAccountLoginMock).toHaveBeenCalledTimes(1);
+    expect(adapterMock.login).not.toHaveBeenCalled();
+    expect(adapterMock.checkin).toHaveBeenCalledTimes(2);
+    expect(adapterMock.checkin.mock.calls[0][1]).toBe('session=stale; acw_tc=old');
+    expect(adapterMock.checkin.mock.calls[0][2]).toBe(1001);
+    expect(adapterMock.checkin.mock.calls[1][1]).toContain('acw_sc__v2=solved');
+    expect(adapterMock.checkin.mock.calls[1][2]).toBe(2202);
   });
 
   it('retries checkin once after auto relogin when access token is missing', async () => {

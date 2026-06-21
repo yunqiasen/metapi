@@ -225,7 +225,7 @@ export function shouldPreferResponsesAfterLegacyChatError(
   if (input.currentEndpoint !== 'chat') return false;
 
   const sitePlatform = normalizePlatformName(input.sitePlatform);
-  if (sitePlatform === 'openai' || sitePlatform === 'claude' || sitePlatform === 'gemini' || sitePlatform === 'anyrouter') {
+  if (sitePlatform === 'openai' || sitePlatform === 'claude' || sitePlatform === 'gemini' || sitePlatform === 'anyrouter' || sitePlatform === 'agentrouter') {
     return false;
   }
 

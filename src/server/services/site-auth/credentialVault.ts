@@ -236,6 +236,21 @@ export async function getSiteAuthCredentialPayload(id: number): Promise<SiteAuth
   return row ? decryptPayload(row.encryptedPayload) : null;
 }
 
+export async function updateSiteAuthCredentialPayload(
+  id: number,
+  payload: SiteAuthCredentialPayload,
+): Promise<SiteAuthCredentialSummary | null> {
+  await db
+    .update(schema.siteAuthCredentials)
+    .set({
+      encryptedPayload: encryptPayload(payload),
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(schema.siteAuthCredentials.id, id))
+    .run();
+  return getSiteAuthCredential(id);
+}
+
 export async function checkSiteAuthCredentialDecryptability(): Promise<SiteAuthCredentialDecryptabilityReport> {
   const rows = await db
     .select()

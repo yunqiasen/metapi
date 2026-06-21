@@ -46,6 +46,7 @@ interface LoginResult {
 
 export interface UserInfo {
   username: string;
+  platformUserId?: number;
   displayName?: string;
   email?: string;
   role?: number;

@@ -2,7 +2,7 @@ export type SiteAuthProviderId = 'linuxdo' | 'github' | 'google';
 
 export type SiteAuthCredentialType = 'oauth_token' | 'cookie' | 'session_artifact' | 'manual';
 
-export type SiteAuthCaptureMode = 'oauth_callback' | 'manual_paste' | 'browser_assisted';
+export type SiteAuthCaptureMode = 'controlled_browser' | 'manual_paste';
 
 export type SiteAuthProviderMetadata = {
   provider: SiteAuthProviderId;
@@ -10,6 +10,8 @@ export type SiteAuthProviderMetadata = {
   credentialTypes: SiteAuthCredentialType[];
   captureModes: SiteAuthCaptureMode[];
   enabled: boolean;
+  authorizationConfigured?: boolean;
+  authorizationUnavailableReason?: string | null;
 };
 
 export type SiteAuthProviderDefinition = {

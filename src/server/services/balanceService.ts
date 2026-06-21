@@ -22,6 +22,7 @@ import {
   isSub2ApiPlatform,
 } from './sub2apiManagedAuth.js';
 import { refreshSub2ApiManagedSessionSingleflight } from './sub2apiRefreshSingleflight.js';
+import { refreshManagedAccountLogin } from './accountManagedBrowserLogin.js';
 
 function isSiteDisabled(status?: string | null): boolean {
   return (status || 'active') === 'disabled';
@@ -74,6 +75,7 @@ function supportsTodayIncomeLogFallback(platform?: string | null): boolean {
   return (
     normalized === 'new-api' ||
     normalized === 'anyrouter' ||
+    normalized === 'agentrouter' ||
     normalized === 'one-api' ||
     normalized === 'veloera'
   );
@@ -208,9 +210,27 @@ async function fetchTodayIncomeFromLogs(params: {
   return Math.round(totalIncome * 1_000_000) / 1_000_000;
 }
 
-async function tryAutoRelogin(account: any, site: any): Promise<string | null> {
+type AutoReloginResult = {
+  accessToken: string;
+  platformUserId?: number;
+  extraConfig?: string;
+};
+
+async function tryAutoRelogin(account: any, site: any): Promise<AutoReloginResult | null> {
   const adapter = getAdapter(site.platform);
   if (!adapter) return null;
+
+  let managedRefresh: Awaited<ReturnType<typeof refreshManagedAccountLogin>> | null = null;
+  try {
+    managedRefresh = await refreshManagedAccountLogin(account, site);
+  } catch {}
+  if (managedRefresh?.accessToken) {
+    return {
+      accessToken: managedRefresh.accessToken,
+      ...(managedRefresh.platformUserId ? { platformUserId: managedRefresh.platformUserId } : {}),
+      extraConfig: managedRefresh.extraConfig,
+    };
+  }
 
   const relogin = getAutoReloginConfig(account.extraConfig);
   if (!relogin) return null;
@@ -233,7 +253,7 @@ async function tryAutoRelogin(account: any, site: any): Promise<string | null> {
     .where(eq(schema.accounts.id, account.id))
     .run();
 
-  return loginResult.accessToken;
+  return { accessToken: loginResult.accessToken };
 }
 
 export async function refreshBalance(accountId: number) {
@@ -277,7 +297,7 @@ export async function refreshBalance(accountId: number) {
     };
   }
 
-  const platformUserId = resolvePlatformUserId(account.extraConfig, account.username);
+  let platformUserId = resolvePlatformUserId(account.extraConfig, account.username);
   let activeAccessToken = account.accessToken;
   let activeExtraConfig = account.extraConfig;
   let balanceInfo: BalanceInfo | null = null;
@@ -343,9 +363,11 @@ export async function refreshBalance(accountId: number) {
         await handleBalanceError(retryErr);
       }
     } else if (shouldAttemptAutoRelogin(message)) {
-      const refreshedAccessToken = await tryAutoRelogin(account, site);
-      if (refreshedAccessToken) {
-        activeAccessToken = refreshedAccessToken;
+      const refreshed = await tryAutoRelogin(account, site);
+      if (refreshed?.accessToken) {
+        activeAccessToken = refreshed.accessToken;
+        if (refreshed.extraConfig) activeExtraConfig = refreshed.extraConfig;
+        if (refreshed.platformUserId) platformUserId = refreshed.platformUserId;
         try {
           balanceInfo = await readBalance(activeAccessToken);
         } catch (retryErr: any) {

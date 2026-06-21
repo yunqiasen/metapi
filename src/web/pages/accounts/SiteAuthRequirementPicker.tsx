@@ -3,6 +3,7 @@ import type {
   SiteAuthRequirementsResponse,
 } from '../../api.js';
 import SiteAuthLoginBridge from './SiteAuthLoginBridge.js';
+import { useEffect, useMemo, useState } from 'react';
 
 type SiteAuthRequirementPickerProps = {
   data: SiteAuthRequirementsResponse | null;
@@ -10,9 +11,8 @@ type SiteAuthRequirementPickerProps = {
   loggingInCredentialId?: number | null;
   startingProvider?: string | null;
   onAddCredential: (provider: string) => void;
-  onStartBrowserLogin: (provider: string) => void;
+  onStartBrowserLogin: (provider: string, credentialId?: number) => void;
   onUseCredential: (credential: SiteAuthCredentialInfo) => void;
-  onOpenBrowserCredentialCapture: () => void;
   onUseAccountPasswordLogin: () => void;
 };
 
@@ -24,29 +24,42 @@ export default function SiteAuthRequirementPicker({
   onAddCredential,
   onStartBrowserLogin,
   onUseCredential,
-  onOpenBrowserCredentialCapture,
   onUseAccountPasswordLogin,
 }: SiteAuthRequirementPickerProps) {
+  const requirements = data?.requirements || [];
+  const defaultCredentialIds = useMemo(() => {
+    const next: Record<string, string> = {};
+    for (const requirement of data?.requirements || []) {
+      const first = requirement.availableProviderCredentials?.[0];
+      if (first) next[requirement.provider] = String(first.id);
+    }
+    return next;
+  }, [data]);
+  const [selectedCredentialIds, setSelectedCredentialIds] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setSelectedCredentialIds(defaultCredentialIds);
+  }, [defaultCredentialIds]);
+
   if (loading) {
     return (
-      <div className="site-auth-picker site-auth-picker-loading">
+      <div className="site-auth-picker site-auth-picker-loading" data-i18n-skip="true">
         正在识别站点登录方式...
       </div>
     );
   }
 
-  const requirements = data?.requirements || [];
   if (!data?.hasThirdPartyLogin || requirements.length === 0) return null;
 
   const providerLabels = requirements.map((item) => item.label).join(' / ');
 
   return (
-    <div className="site-auth-picker">
+    <div className="site-auth-picker" data-i18n-skip="true">
       <div className="site-auth-picker-header">
         <div>
           <div className="site-auth-picker-title">第三方授权登录</div>
           <div className="site-auth-picker-subtitle">
-            检测到该站点支持 {providerLabels} 登录。主流程会打开目标站自己的登录窗口，复用浏览器里已有的 GitHub / Google / LinuxDO 登录态。
+            检测到该站点支持 {providerLabels} 登录。这里会使用 OAuth 管理里已保存的第三方凭证打开目标站授权登录。
           </div>
         </div>
         <div className="site-auth-picker-toolbar">
@@ -57,18 +70,13 @@ export default function SiteAuthRequirementPicker({
           >
             账号密码登录该站点
           </button>
-          <button
-            type="button"
-            className="btn btn-secondary site-auth-provider-action"
-            onClick={onOpenBrowserCredentialCapture}
-          >
-            自动获取浏览器凭证和 UserID
-          </button>
         </div>
       </div>
       <div className="site-auth-provider-list">
         {requirements.map((requirement) => {
-          const credentials = requirement.availableCredentials || [];
+          const targetSiteCredentials = requirement.availableCredentials || [];
+          const providerCredentials = requirement.availableProviderCredentials || [];
+          const selectedCredentialId = Number.parseInt(selectedCredentialIds[requirement.provider] || '', 10);
           return (
             <div className="site-auth-provider-row" key={requirement.provider}>
               <div className="site-auth-provider-copy">
@@ -76,17 +84,51 @@ export default function SiteAuthRequirementPicker({
                 <div className="site-auth-provider-reason">{requirement.reason}</div>
               </div>
               <div className="site-auth-provider-actions">
-                <button
-                  type="button"
-                  className="btn btn-secondary site-auth-provider-action"
-                  onClick={() => onStartBrowserLogin(requirement.provider)}
-                  disabled={startingProvider === requirement.provider}
-                >
-                  {startingProvider === requirement.provider
-                    ? '打开中...'
-                    : `用 ${requirement.label} 浏览器登录该站点`}
-                </button>
-                {credentials.map((credential) => (
+                <div className="site-auth-provider-credential-select">
+                  <label className="site-auth-provider-select-label">
+                    选择已保存 {requirement.label} 凭证
+                  </label>
+                  {providerCredentials.length > 0 ? (
+                    <select
+                      value={selectedCredentialIds[requirement.provider] || String(providerCredentials[0]?.id || '')}
+                      onChange={(event) => setSelectedCredentialIds((current) => ({
+                        ...current,
+                        [requirement.provider]: event.target.value,
+                      }))}
+                    >
+                      {providerCredentials.map((credential) => (
+                        <option key={credential.id} value={credential.id}>
+                          {credential.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="site-auth-provider-empty">
+                      没有可用的 {requirement.label} 凭证
+                    </div>
+                  )}
+                </div>
+                {providerCredentials.length > 0 ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary site-auth-provider-action"
+                    onClick={() => onStartBrowserLogin(requirement.provider, selectedCredentialId)}
+                    disabled={startingProvider === requirement.provider || !selectedCredentialId}
+                  >
+                    {startingProvider === requirement.provider
+                      ? '打开中...'
+                      : `使用已保存 ${requirement.label} 登录该站点`}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-ghost site-auth-provider-action"
+                    onClick={() => onAddCredential(requirement.provider)}
+                  >
+                    去 OAuth 管理保存 {requirement.label} 凭证
+                  </button>
+                )}
+                {targetSiteCredentials.map((credential) => (
                   <SiteAuthLoginBridge
                     key={credential.id}
                     credential={credential}
@@ -94,15 +136,6 @@ export default function SiteAuthRequirementPicker({
                     onUseCredential={onUseCredential}
                   />
                 ))}
-                {credentials.length === 0 ? (
-                  <button
-                    type="button"
-                    className="btn btn-ghost site-auth-provider-action"
-                    onClick={() => onAddCredential(requirement.provider)}
-                  >
-                    管理已保存 {requirement.label} 凭证
-                  </button>
-                ) : null}
               </div>
             </div>
           );

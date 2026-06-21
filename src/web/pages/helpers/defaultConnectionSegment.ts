@@ -4,6 +4,7 @@ const SESSION_FIRST_PLATFORMS = new Set([
   'new-api',
   'one-api',
   'anyrouter',
+  'agentrouter',
   'veloera',
   'one-hub',
   'done-hub',

@@ -21,10 +21,6 @@ import OAuthModelsModal, { type OAuthModelItem } from './oauth/OAuthModelsModal.
 import ProviderConnectionPanel from './oauth/ProviderConnectionPanel.js';
 import SiteAuthCredentialPanel from './oauth/SiteAuthCredentialPanel.js';
 import {
-  browserSessionCredentialCaptureScript,
-  parseBrowserSessionCredentialCapture,
-} from './helpers/browserSessionCredential.js';
-import {
   api,
   type OAuthConnectionInfo,
   type OAuthProviderInfo,
@@ -55,9 +51,9 @@ type ActiveSiteAuthSession = {
 };
 
 const FALLBACK_SITE_AUTH_PROVIDERS: SiteAuthProviderInfo[] = [
-  { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie'], captureModes: ['manual_paste', 'browser_assisted'], enabled: true },
-  { provider: 'github', label: 'GitHub', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
-  { provider: 'google', label: 'Google', credentialTypes: ['oauth_token'], captureModes: ['oauth_callback'], enabled: true },
+  { provider: 'linuxdo', label: 'LinuxDO', credentialTypes: ['cookie', 'session_artifact'], captureModes: ['controlled_browser', 'manual_paste'], enabled: true, authorizationConfigured: true, authorizationUnavailableReason: null },
+  { provider: 'github', label: 'GitHub', credentialTypes: ['session_artifact'], captureModes: ['controlled_browser'], enabled: true, authorizationConfigured: true, authorizationUnavailableReason: null },
+  { provider: 'google', label: 'Google', credentialTypes: ['session_artifact'], captureModes: ['controlled_browser'], enabled: true, authorizationConfigured: true, authorizationUnavailableReason: null },
 ];
 
 function listSiteAuthProviderSource(providers: SiteAuthProviderInfo[]): SiteAuthProviderInfo[] {
@@ -70,9 +66,9 @@ function normalizeSiteAuthImportProvider(provider: string): SiteAuthImportProvid
 }
 
 function resolveSiteAuthImportProviderLabel(provider: SiteAuthImportProvider): string {
-  if (provider === 'github') return 'GitHub 浏览器凭证';
-  if (provider === 'google') return 'Google 浏览器凭证';
-  return 'LinuxDO Cookie';
+  if (provider === 'github') return 'GitHub 凭证';
+  if (provider === 'google') return 'Google 凭证';
+  return 'LinuxDO 凭证';
 }
 
 function resolveSiteAuthImportSecretPlaceholder(provider: SiteAuthImportProvider): string {
@@ -93,11 +89,6 @@ function resolveSiteAuthLoginButtonLabel(provider: string, fallbackLabel?: strin
   return provider === 'linuxdo'
     ? `打开 ${label}登录并保存凭证`
     : `打开 ${label} 登录并保存凭证`;
-}
-
-function extractLinuxDoCookie(value: string): string {
-  const match = value.trim().match(/(?:^|;\s*)ld_auth_session=([^;\s]+)/i);
-  return match?.[1] ? `ld_auth_session=${match[1]}` : value.trim();
 }
 
 type ActiveSession = {
@@ -189,14 +180,16 @@ const COLUMN_OPTIONS: Array<{ key: ColumnKey; label: string }> = [
   { key: 'proxy', label: '代理 / 项目' },
 ];
 
-const OAUTH_POPUP_FEATURES = 'popup=yes,width=540,height=760,resizable=yes,scrollbars=yes';
+const POPUP_WINDOW_FEATURES = 'popup=yes,width=540,height=760,resizable=yes,scrollbars=yes';
+const OAUTH_POPUP_FEATURES = `${POPUP_WINDOW_FEATURES},noopener,noreferrer`;
+const SITE_AUTH_POPUP_FEATURES = POPUP_WINDOW_FEATURES;
 
 function openOAuthPopup(provider: string, authorizationUrl: string) {
   if (typeof window === 'undefined' || typeof window.open !== 'function') return null;
   const popup = window.open(
     authorizationUrl,
     `oauth-${provider}`,
-    `${OAUTH_POPUP_FEATURES},noopener,noreferrer`,
+    OAUTH_POPUP_FEATURES,
   );
   if (popup) {
     try {
@@ -209,6 +202,63 @@ function openOAuthPopup(provider: string, authorizationUrl: string) {
     popup.focus();
   }
   return popup;
+}
+
+function writeSiteAuthPopupLoadingPage(popup: Window, providerLabel: string): void {
+  try {
+    popup.document.open();
+    popup.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Metapi 登录小窗</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f172a;color:#e5e7eb;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.box{width:min(420px,calc(100vw - 32px));padding:28px;border:1px solid rgba(255,255,255,.14);border-radius:22px;background:rgba(15,23,42,.82);box-shadow:0 24px 70px rgba(0,0,0,.35)}.title{font-size:20px;font-weight:800;margin-bottom:10px}.hint{color:#cbd5e1;line-height:1.6}</style></head><body><div class="box"><div class="title">正在启动 ${providerLabel} 登录</div><div class="hint">不要关闭这个小窗。页面加载后，在这里输入账号、密码、验证码或 2FA，登录成功后点击“保存当前登录状态”，Metapi 才会保存凭证。</div></div></body></html>`);
+    popup.document.close();
+  } catch {
+    // Cross-window document access can fail in some browser modes. Navigation still works.
+  }
+}
+
+function openSiteAuthLoginPopup(provider: string, providerLabel: string): Window | null {
+  if (typeof window === 'undefined' || typeof window.open !== 'function') return null;
+  const popup = window.open('', `site-auth-${provider}`, SITE_AUTH_POPUP_FEATURES);
+  if (!popup) return null;
+  writeSiteAuthPopupLoadingPage(popup, providerLabel);
+  if (typeof popup.focus === 'function') {
+    popup.focus();
+  }
+  return popup;
+}
+
+function appendMetapiAuthToken(url: string): string {
+  if (typeof window === 'undefined') return url;
+  const authToken = (window.localStorage?.getItem('auth_token') || '').trim();
+  if (!authToken) return url;
+  try {
+    const parsed = new URL(url, window.location.href);
+    parsed.searchParams.set('metapiAuthToken', authToken);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function navigateSiteAuthLoginPopup(popup: Window, authorizationUrl: string): void {
+  try {
+    const writablePopup = popup as unknown as { location?: { href: string } };
+    if (writablePopup.location) {
+      writablePopup.location.href = appendMetapiAuthToken(authorizationUrl);
+    } else {
+      writablePopup.location = { href: appendMetapiAuthToken(authorizationUrl) };
+    }
+    if (typeof popup.focus === 'function') popup.focus();
+  } catch {
+    // The placeholder was already opened synchronously. Avoid creating a second popup.
+  }
+}
+
+function closeSiteAuthLoginPopup(popup: Window | null): void {
+  if (!popup || typeof popup.close !== 'function') return;
+  try {
+    popup.close();
+  } catch {
+    // Ignore popup close failures.
+  }
 }
 
 function asTrimmedString(value: string | null | undefined): string {
@@ -717,15 +767,6 @@ export default function OAuthManagement() {
   const [siteAuthImportCookie, setSiteAuthImportCookie] = useState('');
   const [siteAuthImporting, setSiteAuthImporting] = useState(false);
   const [siteAuthCaptureParsing, setSiteAuthCaptureParsing] = useState(false);
-  const [siteAuthBrowserCaptureOpen, setSiteAuthBrowserCaptureOpen] = useState(false);
-  const [siteAuthBrowserCaptureText, setSiteAuthBrowserCaptureText] = useState('');
-  const [siteAuthBrowserCaptureError, setSiteAuthBrowserCaptureError] = useState('');
-  const [siteAuthBrowserCaptureSaving, setSiteAuthBrowserCaptureSaving] = useState(false);
-  const [siteAuthBrowserCaptureContext, setSiteAuthBrowserCaptureContext] = useState<null | {
-    provider: string;
-    providerLabel: string;
-    providerLoginUrl: string;
-  }>(null);
   const [verifyingSiteAuthCredentialId, setVerifyingSiteAuthCredentialId] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [sessionFeedback, setSessionFeedback] = useState<SessionFeedback | null>(null);
@@ -1063,7 +1104,7 @@ export default function OAuthManagement() {
       setDrawerProjectId('');
       resetOauthProxySettings();
       setDrawerOpen(true);
-      setSessionInfo('请选择 LinuxDO / GitHub / Google，打开登录窗口后保存网页登录凭证。');
+      setSessionInfo('请选择 LinuxDO / GitHub / Google，打开 Metapi 小窗登录，完成后在小窗点击保存凭证。');
       return;
     }
 
@@ -1130,7 +1171,8 @@ export default function OAuthManagement() {
         const session = await api.getSiteAuthAuthorizationSession(activeSiteAuthSession.state);
         if (cancelled) return;
         if (session.status === 'pending') {
-          setSessionInfo('等待第三方登录授权完成');
+          const providerLabel = resolveSiteAuthProviderLabel(activeSiteAuthSession.provider);
+          setSessionInfo(`等待 ${providerLabel} 登录完成；完成后请在小窗点击保存当前登录状态`);
           timer = setTimeout(poll, POLL_INTERVAL_MS);
           return;
         }
@@ -1142,7 +1184,15 @@ export default function OAuthManagement() {
           setActiveSiteAuthSession(null);
           return;
         }
-        const message = `第三方登录授权失败：${session.error || '未知错误'}`;
+        if (session.status === 'closed') {
+          const providerLabel = resolveSiteAuthProviderLabel(activeSiteAuthSession.provider);
+          setSessionInfo(`${providerLabel} 登录窗口已关闭，未保存凭证`);
+          setActiveSiteAuthSession(null);
+          return;
+        }
+        const message = session.status === 'error'
+          ? `第三方登录授权失败：${session.error || '受控登录窗口异常'}`
+          : `第三方登录授权状态异常：${session.status || 'unknown'}`;
         setSessionError(message);
         toast.error(message);
         setActiveSiteAuthSession(null);
@@ -1199,7 +1249,7 @@ export default function OAuthManagement() {
     () => siteAuthLoginProviders.map((provider) => ({
       value: provider.provider,
       label: resolveSiteAuthProviderLabel(provider.provider) || provider.label,
-      description: '保存这个 Provider 的长期登录凭证',
+      description: '打开 Metapi 小窗登录，手动确认保存这个 Provider 的长期凭证',
     })),
     [siteAuthLoginProviders],
   );
@@ -1213,6 +1263,9 @@ export default function OAuthManagement() {
     () => siteAuthLoginProviders.find((provider) => provider.provider === selectedSiteAuthProviderKey) || null,
     [siteAuthLoginProviders, selectedSiteAuthProviderKey],
   );
+  const siteAuthAuthorizationStarting = actionLoadingKey.startsWith('site-auth-provider-start:');
+  const siteAuthAuthorizationStartDisabled = !selectedSiteAuthProvider
+    || siteAuthAuthorizationStarting;
 
   useEffect(() => {
     if (!drawerOpen || drawerIntent.mode !== 'create' || createConnectionMode !== 'site-auth') return;
@@ -1505,60 +1558,11 @@ export default function OAuthManagement() {
     }
   };
 
-  const closeSiteAuthBrowserCapture = () => {
-    if (siteAuthBrowserCaptureSaving) return;
-    setSiteAuthBrowserCaptureOpen(false);
-    setSiteAuthBrowserCaptureText('');
-    setSiteAuthBrowserCaptureError('');
-    setSiteAuthBrowserCaptureContext(null);
-  };
-
-  const handleSaveSiteAuthBrowserCapture = async () => {
-    const context = siteAuthBrowserCaptureContext;
-    if (!context) return;
-    try {
-      const parsed = parseBrowserSessionCredentialCapture(siteAuthBrowserCaptureText);
-      setSiteAuthBrowserCaptureSaving(true);
-      setSiteAuthBrowserCaptureError('');
-      const credentialLabel = parsed.username
-        ? `${context.providerLabel} · ${parsed.username}`
-        : `${context.providerLabel} 登录凭证`;
-      const isLinuxDo = context.provider === 'linuxdo';
-      const linuxDoCookie = isLinuxDo ? extractLinuxDoCookie(parsed.accessToken) : '';
-      await api.importSiteAuthCredential({
-        provider: context.provider,
-        label: credentialLabel,
-        ...(parsed.username ? { username: parsed.username } : {}),
-        ...(parsed.platformUserId ? { subject: parsed.platformUserId } : {}),
-        credentialType: isLinuxDo ? 'cookie' : 'session_artifact',
-        payload: isLinuxDo
-          ? { cookie: linuxDoCookie }
-          : {
-            accessToken: parsed.accessToken,
-            ...(parsed.platformUserId ? { platformUserId: parsed.platformUserId } : {}),
-            ...(parsed.username ? { username: parsed.username } : {}),
-          },
-        metadata: {
-          source: 'provider-browser-login',
-          providerLoginUrl: context.providerLoginUrl,
-        },
-      });
-      await loadSiteAuthCredentials();
-      setSiteAuthBrowserCaptureOpen(false);
-      setSiteAuthBrowserCaptureText('');
-      setSiteAuthBrowserCaptureContext(null);
-      setSessionSuccess(`${credentialLabel} 已保存`);
-      toast.success('第三方登录凭证已保存');
-    } catch (error: any) {
-      setSiteAuthBrowserCaptureError(error?.message || '浏览器凭证解析失败');
-    } finally {
-      setSiteAuthBrowserCaptureSaving(false);
-    }
-  };
-
-  const handleStartSiteAuthAuthorization = async (event?: { preventDefault?: () => void }) => {
+  const handleStartSiteAuthAuthorization = async (providerKey?: SiteAuthImportProvider, event?: { preventDefault?: () => void }) => {
     event?.preventDefault?.();
-    const provider = selectedSiteAuthProvider;
+    const provider = providerKey
+      ? siteAuthLoginProviders.find((item) => item.provider === providerKey) || null
+      : selectedSiteAuthProvider;
     if (!provider || actionLoadingKey.startsWith('site-auth-provider-start:')) {
       if (!provider) {
         const message = '请先选择登录 Provider';
@@ -1568,31 +1572,27 @@ export default function OAuthManagement() {
       return;
     }
     const providerLabel = resolveSiteAuthProviderLabel(provider.provider) || provider.label;
+    const popup = openSiteAuthLoginPopup(provider.provider, providerLabel);
+    if (!popup) {
+      const message = '浏览器拦截了登录小窗，请允许本站弹窗后再点一次';
+      setSessionError(message);
+      toast.error(message);
+      return;
+    }
     const actionKey = `site-auth-provider-start:${provider.provider}`;
     setActionLoadingKey(actionKey);
     try {
       const started = await api.startSiteAuthProviderAuthorization(provider.provider);
-      openOAuthPopup(provider.provider, started.authorizationUrl);
-      if (started.instructions.mode === 'browser_login') {
-        setSiteAuthBrowserCaptureContext({
-          provider: provider.provider,
-          providerLabel,
-          providerLoginUrl: started.authorizationUrl,
-        });
-        setSiteAuthBrowserCaptureText('');
-        setSiteAuthBrowserCaptureError('');
-        setSiteAuthBrowserCaptureOpen(true);
-        setSessionInfo(`已打开 ${providerLabel} 登录窗口，登录后保存长期凭证。`);
-      } else {
-        setSessionInfo('等待第三方登录授权完成');
-        setActiveSiteAuthSession({
-          provider: started.provider,
-          state: started.state,
-          authorizationUrl: started.authorizationUrl,
-          instructions: started.instructions,
-        });
-      }
+      navigateSiteAuthLoginPopup(popup, started.authorizationUrl);
+      setSessionInfo(`等待 ${providerLabel} 登录完成；完成后请在小窗点击保存当前登录状态`);
+      setActiveSiteAuthSession({
+        provider: started.provider,
+        state: started.state,
+        authorizationUrl: started.authorizationUrl,
+        instructions: started.instructions,
+      });
     } catch (error: any) {
+      closeSiteAuthLoginPopup(popup);
       const message = error?.message || `无法打开 ${providerLabel} 登录`;
       setSessionError(message);
       toast.error(message);
@@ -2586,14 +2586,11 @@ export default function OAuthManagement() {
           credentials={siteAuthCredentials}
           decryptability={siteAuthCredentialDecryptability}
           loaded={loaded}
-          onImportCredential={openSiteAuthImportModal}
-          onAuthorizeCredential={() => openSiteAuthAuthorizationDrawer('linuxdo')}
+          authorizingProvider={siteAuthAuthorizationStarting ? actionLoadingKey.replace('site-auth-provider-start:', '') : null}
+          onAuthorizeCredential={(provider) => handleStartSiteAuthAuthorization(normalizeSiteAuthImportProvider(provider))}
           onVerifyCredential={handleVerifySiteAuthCredential}
           onDeleteCredential={handleDeleteSiteAuthCredential}
-          onLoadTargetSites={handleLoadSiteAuthTargetSites}
           verifyingCredentialId={verifyingSiteAuthCredentialId}
-          targetSitesByCredentialId={siteAuthTargetSitesByCredentialId}
-          loadingTargetSitesCredentialId={loadingSiteAuthTargetSitesCredentialId}
         />
       </div>
 
@@ -2662,62 +2659,6 @@ export default function OAuthManagement() {
             <div className="oauth-form-note">
               凭证会加密落库，列表只显示脱敏摘要。后续添加 Session 连接时会复用这里保存的第三方登录凭证。
             </div>
-          </div>
-        </div>
-      </CenteredModal>
-
-      <CenteredModal
-        open={siteAuthBrowserCaptureOpen}
-        onClose={closeSiteAuthBrowserCapture}
-        title={`保存 ${siteAuthBrowserCaptureContext?.providerLabel || ''} 登录凭证`.trim()}
-        maxWidth={680}
-        footer={(
-          <>
-            <button type="button" className="btn btn-ghost" onClick={closeSiteAuthBrowserCapture} disabled={siteAuthBrowserCaptureSaving}>
-              取消
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleSaveSiteAuthBrowserCapture}
-              disabled={siteAuthBrowserCaptureSaving || !siteAuthBrowserCaptureText.trim()}
-            >
-              {siteAuthBrowserCaptureSaving ? '保存中...' : '保存持久凭证'}
-            </button>
-          </>
-        )}
-      >
-        <div className="oauth-drawer-section">
-          <div className="oauth-form-note">
-            登录对应 Provider 后，在登录页面控制台执行下面脚本，把复制出的结果粘贴到这里。保存后会进入第三方登录凭证列表。
-          </div>
-          <div className="oauth-form-field">
-            <div className="oauth-field-label">浏览器捕获脚本</div>
-            <textarea
-              className="oauth-textarea oauth-mono"
-              readOnly
-              value={browserSessionCredentialCaptureScript}
-              rows={7}
-            />
-          </div>
-          <div className="oauth-form-field">
-            <div className="oauth-field-label">粘贴浏览器脚本输出</div>
-            <textarea
-              className="oauth-textarea oauth-mono"
-              data-site-auth-browser-capture="text"
-              value={siteAuthBrowserCaptureText}
-              onChange={(event) => {
-                setSiteAuthBrowserCaptureText(event.target.value);
-                setSiteAuthBrowserCaptureError('');
-              }}
-              placeholder="粘贴浏览器脚本输出的 JSON、Cookie 或 Session 字符串"
-              rows={5}
-            />
-            {siteAuthBrowserCaptureError ? (
-              <div className="oauth-form-note oauth-form-note-error">
-                {siteAuthBrowserCaptureError}
-              </div>
-            ) : null}
           </div>
         </div>
       </CenteredModal>
@@ -2806,17 +2747,17 @@ export default function OAuthManagement() {
               {drawerIntent.mode === 'create' && createConnectionMode === 'site-auth' ? (
                 <>
                   <div className="oauth-form-note">
-                    这里保存 L 站、GitHub、Google 的长期登录凭证。保存后，后续登录中转站时复用这份凭证。
+                    这里打开 Metapi 受控小窗登录 L 站、GitHub、Google。登录成功后在小窗点击保存，后续登录中转站时复用。
                   </div>
                   <button
                     type="button"
-                    className={`btn btn-primary ${(!selectedSiteAuthProvider || actionLoadingKey.startsWith('site-auth-provider-start:')) ? 'is-disabled' : ''}`.trim()}
+                    className={`btn btn-primary ${siteAuthAuthorizationStartDisabled ? 'is-disabled' : ''}`.trim()}
                     data-testid="site-auth-provider-login-link"
-                    aria-disabled={!selectedSiteAuthProvider || actionLoadingKey.startsWith('site-auth-provider-start:')}
-                    disabled={!selectedSiteAuthProvider || actionLoadingKey.startsWith('site-auth-provider-start:')}
-                    onClick={handleStartSiteAuthAuthorization}
+                    aria-disabled={siteAuthAuthorizationStartDisabled}
+                    disabled={siteAuthAuthorizationStartDisabled}
+                    onClick={(event) => handleStartSiteAuthAuthorization(undefined, event)}
                   >
-                    {actionLoadingKey.startsWith('site-auth-provider-start:')
+                    {siteAuthAuthorizationStarting
                       ? '启动中...'
                       : selectedSiteAuthProvider
                         ? resolveSiteAuthLoginButtonLabel(selectedSiteAuthProvider.provider, selectedSiteAuthProvider.label)

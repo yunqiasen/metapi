@@ -1,7 +1,44 @@
-import { describe, expect, it } from 'vitest';
-import { resolveSiteAuthRequirements } from './siteAuthRequirements.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { fetchMock } = vi.hoisted(() => ({
+  fetchMock: vi.fn(),
+}));
+
+vi.mock('undici', async () => {
+  const actual = await vi.importActual<typeof import('undici')>('undici');
+  return {
+    ...actual,
+    fetch: (...args: unknown[]) => fetchMock(...args),
+  };
+});
+
+import { resolveSiteAuthRequirements, resolveSiteAuthRequirementsForSite } from './siteAuthRequirements.js';
+
+function htmlResponse(html: string) {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'text/html; charset=utf-8' },
+    text: async () => html,
+    json: async () => JSON.parse(html),
+  };
+}
+
+function jsonResponse(body: unknown) {
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'application/json; charset=utf-8' },
+    text: async () => JSON.stringify(body),
+    json: async () => body,
+  };
+}
 
 describe('resolveSiteAuthRequirements', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
   it('detects LinuxDO from a visible login button', () => {
     const result = resolveSiteAuthRequirements({
       site: { id: 7, name: 'Demo Hub', url: 'https://demo.example.com', platform: 'new-api' },
@@ -21,6 +58,16 @@ describe('resolveSiteAuthRequirements', () => {
     expect(result.requirements.map((item) => item.provider)).toEqual(['github', 'google']);
   });
 
+  it('does not treat analytics or model text as Google login support', () => {
+    const result = resolveSiteAuthRequirements({
+      site: { id: 10, name: 'Analytics Site', url: 'https://analytics.example.com', platform: 'new-api' },
+      html: '<!--Google Analytics--><meta content="Google Gemini compatible API"><div>Login</div>',
+    });
+
+    expect(result.hasThirdPartyLogin).toBe(false);
+    expect(result.requirements).toEqual([]);
+  });
+
   it('uses explicit site metadata before html detection', () => {
     const result = resolveSiteAuthRequirements({
       site: {
@@ -35,5 +82,49 @@ describe('resolveSiteAuthRequirements', () => {
     expect(result.requirements).toEqual([
       expect.objectContaining({ provider: 'linuxdo', confidence: 'explicit' }),
     ]);
+  });
+
+  it('uses login and register pages before NewAPI status provider flags', async () => {
+    fetchMock
+      .mockResolvedValueOnce(htmlResponse('<div id="root"><!-- SPA shell --></div>'))
+      .mockResolvedValueOnce(htmlResponse('<form><input name="username"></form>'))
+      .mockResolvedValueOnce(htmlResponse('<form><input name="username"></form>'));
+
+    const result = await resolveSiteAuthRequirementsForSite({
+      id: 12,
+      name: '917813',
+      url: 'https://api.nexusvai.xyz',
+      platform: 'new-api',
+    });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      'https://api.nexusvai.xyz',
+      'https://api.nexusvai.xyz/login',
+      'https://api.nexusvai.xyz/register',
+    ]);
+    expect(result).toMatchObject({
+      siteId: 12,
+      hasThirdPartyLogin: false,
+      requirements: [],
+    });
+  });
+
+  it('checks login and register pages when the root page is only a SPA shell', async () => {
+    fetchMock
+      .mockResolvedValueOnce(htmlResponse('<div id="root"><!--Google Analytics QuantumNous--></div>'))
+      .mockResolvedValueOnce(htmlResponse('<a href="https://github.com/login/oauth/authorize">Continue with GitHub</a>'));
+
+    const result = await resolveSiteAuthRequirementsForSite({
+      id: 13,
+      name: 'GitHub Login Site',
+      url: 'https://target.example.com',
+      platform: 'new-api',
+    });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      'https://target.example.com',
+      'https://target.example.com/login',
+    ]);
+    expect(result.requirements.map((item) => item.provider)).toEqual(['github']);
   });
 });

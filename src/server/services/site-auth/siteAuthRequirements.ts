@@ -70,9 +70,26 @@ function detectProvidersFromHtml(html: string): SiteAuthProviderId[] {
   const text = html || '';
   const lowerText = text.toLowerCase();
 
-  if (/linuxdo|linux\.do|使用\s*linuxdo\s*继续/i.test(text)) providers.push('linuxdo');
-  if (lowerText.includes('github.com/login/oauth') || /github/i.test(text)) providers.push('github');
-  if (lowerText.includes('accounts.google.com') || /google/i.test(text)) providers.push('google');
+  if (
+    lowerText.includes('linux.do/oauth')
+    || lowerText.includes('linux.do/login/oauth')
+    || /使用\s*linuxdo\s*继续/i.test(text)
+    || /continue\s+with\s+linuxdo/i.test(text)
+  ) providers.push('linuxdo');
+  if (
+    lowerText.includes('github.com/login/oauth')
+    || lowerText.includes('/api/oauth/github')
+    || lowerText.includes('/oauth/github')
+    || /continue\s+with\s+github/i.test(text)
+    || /使用\s*github\s*继续/i.test(text)
+  ) providers.push('github');
+  if (
+    lowerText.includes('accounts.google.com/o/oauth')
+    || lowerText.includes('/api/oauth/google')
+    || lowerText.includes('/oauth/google')
+    || /continue\s+with\s+google/i.test(text)
+    || /使用\s*google\s*继续/i.test(text)
+  ) providers.push('google');
 
   return uniqueProviders(providers);
 }
@@ -107,8 +124,30 @@ export function resolveSiteAuthRequirements(input: ResolveSiteAuthRequirementsIn
   };
 }
 
-async function fetchSiteLoginHtml(site: SiteAuthRequirementSiteInput): Promise<string | null> {
-  const url = typeof site.url === 'string' ? site.url.trim() : '';
+function normalizeBaseUrl(value: unknown): string {
+  const url = typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return url;
+  }
+}
+
+function resolveSiteUrl(site: SiteAuthRequirementSiteInput, path: string): string | null {
+  const baseUrl = normalizeBaseUrl(site.url);
+  if (!baseUrl) return null;
+  if (!path) return baseUrl;
+  try {
+    return new URL(path, `${baseUrl}/`).toString();
+  } catch {
+    return `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+  }
+}
+
+async function fetchSiteHtmlAt(site: SiteAuthRequirementSiteInput, path: string): Promise<string | null> {
+  const url = resolveSiteUrl(site, path);
   if (!url) return null;
 
   try {
@@ -132,6 +171,66 @@ async function fetchSiteLoginHtml(site: SiteAuthRequirementSiteInput): Promise<s
   }
 }
 
+async function fetchSiteLoginHtml(site: SiteAuthRequirementSiteInput): Promise<string | null> {
+  const pagePaths = ['', '/login', '/register'];
+  const htmlParts: string[] = [];
+  for (const path of pagePaths) {
+    const html = await fetchSiteHtmlAt(site, path);
+    if (!html) continue;
+    htmlParts.push(html);
+    if (detectProvidersFromHtml(html).length > 0) break;
+  }
+  return htmlParts.length > 0 ? htmlParts.join('\n') : null;
+}
+
+function statusFlagEnabled(payload: Record<string, unknown>, flagName: string, clientIdName: string): boolean {
+  const rawFlag = payload[flagName];
+  const flagEnabled = rawFlag === true || rawFlag === 1 || rawFlag === '1' || rawFlag === 'true';
+  if (!flagEnabled) return false;
+  const clientId = payload[clientIdName];
+  return typeof clientId !== 'string' || clientId.trim().length > 0;
+}
+
+function detectProvidersFromNewApiStatus(payload: unknown): SiteAuthProviderId[] {
+  const source = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {};
+  const data = source.data && typeof source.data === 'object' && !Array.isArray(source.data)
+    ? source.data as Record<string, unknown>
+    : source;
+  const providers: SiteAuthProviderId[] = [];
+  if (statusFlagEnabled(data, 'github_oauth', 'github_client_id')) providers.push('github');
+  if (statusFlagEnabled(data, 'linuxdo_oauth', 'linuxdo_client_id')) providers.push('linuxdo');
+  if (statusFlagEnabled(data, 'google_oauth', 'google_client_id')) providers.push('google');
+  return uniqueProviders(providers);
+}
+
+function isNewApiLikePlatform(platform: unknown): boolean {
+  const normalized = typeof platform === 'string' ? platform.trim().toLowerCase() : '';
+  return normalized === 'new-api' || normalized === 'one-api' || normalized === 'veloera' || normalized === 'anyrouter' || normalized === 'agentrouter';
+}
+
+async function fetchNewApiStatusProviders(site: SiteAuthRequirementSiteInput): Promise<SiteAuthProviderId[]> {
+  if (!isNewApiLikePlatform(site.platform)) return [];
+  const url = resolveSiteUrl(site, '/api/status');
+  if (!url) return [];
+  try {
+    const response = await fetch(url, withSiteRecordProxyRequestInit(site, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json,*/*;q=0.1',
+        'User-Agent': 'Metapi site-auth requirements probe',
+      },
+      signal: AbortSignal.timeout(SITE_AUTH_REQUIREMENTS_HTML_TIMEOUT_MS),
+    }));
+    if (!response.ok) return [];
+    const payload = await response.json() as unknown;
+    return detectProvidersFromNewApiStatus(payload);
+  } catch {
+    return [];
+  }
+}
+
 export async function resolveSiteAuthRequirementsForSite(
   site: SiteAuthRequirementSiteInput,
 ): Promise<SiteAuthRequirementResult> {
@@ -139,7 +238,19 @@ export async function resolveSiteAuthRequirementsForSite(
   if (explicit.hasThirdPartyLogin) return explicit;
 
   const html = await fetchSiteLoginHtml(site);
-  return resolveSiteAuthRequirements({ site, html });
+  const htmlResult = resolveSiteAuthRequirements({ site, html });
+  if (htmlResult.hasThirdPartyLogin || html) return htmlResult;
+
+  const statusProviders = await fetchNewApiStatusProviders(site);
+  if (statusProviders.length > 0) {
+    return {
+      siteId: site.id,
+      hasThirdPartyLogin: true,
+      requirements: statusProviders.map((provider) => buildRequirement(provider, 'detected', 'NewAPI status declares this OAuth provider')),
+    };
+  }
+
+  return htmlResult;
 }
 
 export async function listTargetSitesForSiteAuthProvider(

@@ -18,6 +18,7 @@ import { decryptAccountPassword } from './accountCredentialService.js';
 import { setAccountRuntimeHealth } from './accountHealthService.js';
 import { formatUtcSqlDateTime } from './localTimeService.js';
 import { withAccountProxyOverride } from './siteProxy.js';
+import { refreshManagedAccountLogin } from './accountManagedBrowserLogin.js';
 
 type CheckinExecutionStatus = 'success' | 'failed' | 'skipped';
 
@@ -92,9 +93,27 @@ function inferRewardFromBalanceDelta(previousBalance: unknown, latestBalance: un
   return Math.round(delta * 1_000_000) / 1_000_000;
 }
 
-async function tryAutoRelogin(account: any, site: any): Promise<string | null> {
+type AutoReloginResult = {
+  accessToken: string;
+  platformUserId?: number;
+  extraConfig?: string;
+};
+
+async function tryAutoRelogin(account: any, site: any): Promise<AutoReloginResult | null> {
   const adapter = getAdapter(site.platform);
   if (!adapter) return null;
+
+  let managedRefresh: Awaited<ReturnType<typeof refreshManagedAccountLogin>> | null = null;
+  try {
+    managedRefresh = await refreshManagedAccountLogin(account, site);
+  } catch {}
+  if (managedRefresh?.accessToken) {
+    return {
+      accessToken: managedRefresh.accessToken,
+      ...(managedRefresh.platformUserId ? { platformUserId: managedRefresh.platformUserId } : {}),
+      extraConfig: managedRefresh.extraConfig,
+    };
+  }
 
   const relogin = getAutoReloginConfig(account.extraConfig);
   if (!relogin) return null;
@@ -117,7 +136,7 @@ async function tryAutoRelogin(account: any, site: any): Promise<string | null> {
     .where(eq(schema.accounts.id, account.id))
     .run();
 
-  return result.accessToken;
+  return { accessToken: result.accessToken };
 }
 
 export async function checkinAccount(accountId: number, options?: { skipEvent?: boolean; scheduleMode?: 'cron' | 'interval' }) {
@@ -175,7 +194,7 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
   const guessedPlatformUserId = storedPlatformUserId
     ? undefined
     : guessPlatformUserIdFromUsername(account.username);
-  const platformUserId = resolvePlatformUserId(account.extraConfig, account.username);
+  let platformUserId = resolvePlatformUserId(account.extraConfig, account.username);
 
   const accountProxyUrl = resolveProxyUrlFromExtraConfig(account.extraConfig);
   let activeAccessToken = account.accessToken;
@@ -183,9 +202,10 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
     () => adapter.checkin(site.url, activeAccessToken, platformUserId));
 
   if (!result.success && shouldAttemptAutoRelogin(result.message)) {
-    const refreshedAccessToken = await tryAutoRelogin(account, site);
-    if (refreshedAccessToken) {
-      activeAccessToken = refreshedAccessToken;
+    const refreshed = await tryAutoRelogin(account, site);
+    if (refreshed?.accessToken) {
+      activeAccessToken = refreshed.accessToken;
+      if (refreshed.platformUserId) platformUserId = refreshed.platformUserId;
       result = await withAccountProxyOverride(accountProxyUrl,
         () => adapter.checkin(site.url, activeAccessToken, platformUserId));
     }

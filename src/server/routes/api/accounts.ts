@@ -60,11 +60,25 @@ import {
   parseBatchApiKeys,
 } from "../../services/apiKeyBatch.js";
 import { createManualAccount } from "../../services/manualAccountCreationService.js";
+import { isManagedBrowserLoginSite, resolveAccountBrowserProfileDir } from "../../services/accountManagedBrowserLogin.js";
 import {
   getSiteAuthCredential,
   getSiteAuthCredentialPayload,
 } from "../../services/site-auth/credentialVault.js";
 import { resolveSiteAuthLogin, startSiteAuthBrowserLogin, toSafeSiteAuthBridgeError } from "../../services/site-auth/loginBridge.js";
+import {
+  captureTargetSiteBrowserScreenshot,
+  closeTargetSiteBrowserSession,
+  getTargetSiteBrowserSession,
+  markTargetSiteBrowserSessionSaved,
+  persistTargetSiteBrowserProfile,
+  readTargetSiteBrowserSessionAccessToken,
+  readTargetSiteBrowserSessionUserInfo,
+  renderTargetSiteBrowserPage,
+  sendTargetSiteBrowserInput,
+  startTargetSiteBrowserSession,
+  type TargetSiteBrowserInputEvent,
+} from "../../services/site-auth/targetSiteBrowserSession.js";
 
 type AccountWithSiteRow = {
   accounts: typeof schema.accounts.$inferSelect;
@@ -86,11 +100,25 @@ type AccountCapabilities = {
   proxyOnly: boolean;
 };
 
+type TargetBrowserSessionAccountParams = {
+  siteId: number;
+  site?: typeof schema.sites.$inferSelect;
+  accessToken: string;
+  username?: string;
+  provider?: string;
+  credentialId?: number;
+};
+
 type VerifyFailureReason =
   | "needs-user-id"
   | "invalid-user-id"
   | "shield-blocked"
   | null;
+
+function isNewApiSessionPlatform(platform: unknown): boolean {
+  const normalized = String(platform || '').trim().toLowerCase();
+  return normalized === 'new-api' || normalized === 'anyrouter' || normalized === 'agentrouter';
+}
 
 const limitAccountLogin = createRateLimitGuard({
   bucket: "accounts-login",
@@ -108,6 +136,41 @@ function parseBooleanFlag(raw?: string): boolean {
   if (!raw) return false;
   const normalized = raw.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function resolveRequestOrigin(request: { headers: Record<string, unknown>; protocol?: string; hostname?: string }): string {
+  const origin = typeof request.headers.origin === "string" ? request.headers.origin.trim() : "";
+  if (origin) return origin;
+  const referer = typeof request.headers.referer === "string" ? request.headers.referer.trim() : "";
+  if (referer) {
+    try {
+      return new URL(referer).origin;
+    } catch {}
+  }
+  const forwardedHost = typeof request.headers["x-forwarded-host"] === "string" ? request.headers["x-forwarded-host"].trim() : "";
+  const forwardedProto = typeof request.headers["x-forwarded-proto"] === "string" ? request.headers["x-forwarded-proto"].trim().split(",")[0] : "";
+  if (forwardedHost) {
+    return (forwardedProto || request.protocol || "http") + "://" + forwardedHost.split(",")[0].trim();
+  }
+  const host = typeof request.headers.host === "string" ? request.headers.host.trim() : "";
+  const protocol = request.protocol || "http";
+  return host ? protocol + "://" + host : "";
+}
+function resolveSiteLoginUrl(site: { url?: string | null }): string {
+  const baseUrl = String(site.url || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) throw new Error("target site URL is required");
+  try {
+    return new URL("/login", `${baseUrl}/`).toString();
+  } catch {
+    return `${baseUrl}/login`;
+  }
+}
+
+function isControlledProviderCredential(credential: { provider?: string; credentialType: string; metadata?: Record<string, unknown> | null }, provider: string): boolean {
+  const source = typeof credential.metadata?.source === 'string' ? credential.metadata.source : '';
+  return credential.provider === provider
+    && source === 'controlled-browser-login'
+    && (credential.credentialType === 'cookie' || credential.credentialType === 'session_artifact');
 }
 
 function hasSessionTokenValue(value: string | null | undefined): boolean {
@@ -175,6 +238,29 @@ function normalizeBatchIds(input: unknown): number[] {
     .filter((id) => Number.isFinite(id) && id > 0);
 }
 
+function parseFiniteNumber(value: unknown): number | null {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function parseTargetSiteBrowserInputEvent(value: unknown): TargetSiteBrowserInputEvent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const payload = value as Record<string, unknown>;
+  const type = typeof payload.type === "string" ? payload.type.trim() : "";
+  if (type === "click" || type === "mouseDown" || type === "mouseMove" || type === "mouseUp") {
+    const x = parseFiniteNumber(payload.x);
+    const y = parseFiniteNumber(payload.y);
+    return x === null || y === null ? null : { type, x, y };
+  }
+  if (type === "type") return typeof payload.text === "string" ? { type, text: payload.text } : null;
+  if (type === "press") return typeof payload.key === "string" ? { type, key: payload.key } : null;
+  if (type === "scroll") {
+    const deltaY = parseFiniteNumber(payload.deltaY);
+    return deltaY === null ? null : { type, deltaY };
+  }
+  return null;
+}
+
 function normalizePinnedFlag(input: unknown): boolean | null {
   if (input === undefined || input === null) return null;
   if (typeof input === "boolean") return input;
@@ -234,6 +320,91 @@ async function getNextAccountSortOrder(): Promise<number> {
     -1,
   );
   return max + 1;
+}
+
+function isTargetBrowserSessionVerificationFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /Token 验证失败|requires user id|New-Api-User|User-ID|verification timed out|未获取到可用模型/i.test(message);
+}
+
+async function createTargetBrowserSessionAccountWithoutVerification({
+  siteId,
+  site,
+  accessToken,
+  username,
+  provider,
+  credentialId,
+}: TargetBrowserSessionAccountParams): Promise<typeof schema.accounts.$inferSelect> {
+  const extraConfig = mergeAccountExtraConfig(undefined, {
+    credentialMode: "session",
+    source: "target-site-browser-login",
+    ...(provider ? { sourceProvider: provider } : {}),
+    ...(credentialId ? { providerCredentialId: credentialId } : {}),
+    ...(site && isManagedBrowserLoginSite(site) ? {
+      managedBrowserProfile: {
+        enabled: true,
+        provider: String(site.platform || '').toLowerCase(),
+        profileDir: resolveAccountBrowserProfileDir({ id: 0 }, site).replace(/0$/, '<accountId>'),
+        createdFrom: 'target-site-browser-login',
+        updatedAt: new Date().toISOString(),
+      },
+    } : {}),
+    verification: "pending",
+  });
+  const inserted = await insertAndGetById<typeof schema.accounts.$inferSelect>({
+    table: schema.accounts,
+    idColumn: schema.accounts.id,
+    values: {
+      siteId,
+      username: username || undefined,
+      accessToken,
+      checkinEnabled: true,
+      extraConfig,
+      isPinned: false,
+      sortOrder: await getNextAccountSortOrder(),
+    },
+    insertErrorMessage: "创建账号失败",
+    loadErrorMessage: "创建账号失败",
+  });
+  const account = await db.select().from(schema.accounts).where(eq(schema.accounts.id, inserted.id)).get();
+  if (!account) throw new Error("创建账号失败");
+  return account;
+}
+
+async function persistTargetBrowserSessionProfileForAccount({
+  state,
+  account,
+  site,
+}: {
+  state?: string;
+  account: typeof schema.accounts.$inferSelect;
+  site: typeof schema.sites.$inferSelect;
+}): Promise<typeof schema.accounts.$inferSelect> {
+  const normalizedState = typeof state === "string" ? state.trim() : "";
+  if (!normalizedState) return account;
+
+  const profileDir = resolveAccountBrowserProfileDir(account, site);
+  await persistTargetSiteBrowserProfile(normalizedState, profileDir);
+  const platform = String(site.platform || "").trim().toLowerCase();
+  const extraConfig = mergeAccountExtraConfig(account.extraConfig, {
+    credentialMode: "session",
+    source: "target-site-browser-login",
+    managedBrowserProfile: {
+      enabled: true,
+      ...(platform ? { provider: platform } : {}),
+      profileDir,
+      createdFrom: "target-site-browser-login",
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  await db
+    .update(schema.accounts)
+    .set({ extraConfig, updatedAt: new Date().toISOString() })
+    .where(eq(schema.accounts.id, account.id));
+
+  const updated = await db.select().from(schema.accounts).where(eq(schema.accounts.id, account.id)).get();
+  return updated || { ...account, extraConfig };
 }
 
 type LoginFailureInfo = {
@@ -592,6 +763,15 @@ export async function accountsRoutes(app: FastifyInstance) {
       if (guessedPlatformUserId) {
         extraConfigPatch.platformUserId = guessedPlatformUserId;
       }
+      if (isManagedBrowserLoginSite(site)) {
+        extraConfigPatch.managedBrowserProfile = {
+          enabled: true,
+          provider: String(site.platform || '').toLowerCase(),
+          profileDir: resolveAccountBrowserProfileDir({ id: existing?.id || 0 }, site).replace(/0$/, existing?.id ? String(existing.id) : '<accountId>'),
+          createdFrom: 'account-password-login',
+          updatedAt: new Date().toISOString(),
+        };
+      }
       const extraConfig = mergeAccountExtraConfig(
         existing?.extraConfig,
         extraConfigPatch,
@@ -713,8 +893,7 @@ export async function accountsRoutes(app: FastifyInstance) {
           ? Math.trunc(platformUserId)
           : undefined;
       const hasProvidedUserId = parsedPlatformUserId !== undefined;
-      const skipRawShieldDetection =
-        normalizedPlatform === "new-api" || normalizedPlatform === "anyrouter";
+      const skipRawShieldDetection = isNewApiSessionPlatform(normalizedPlatform);
       const diagnoseVerificationFailure = async (
         options: { useApiEndpointPool?: boolean } = {},
       ): Promise<VerifyFailureReason> => {
@@ -860,7 +1039,7 @@ export async function accountsRoutes(app: FastifyInstance) {
 
       if (
         !hasProvidedUserId &&
-        (normalizedPlatform === "new-api" || normalizedPlatform === "anyrouter")
+        isNewApiSessionPlatform(normalizedPlatform)
       ) {
         const preflightReason = await diagnoseVerificationFailure({
           useApiEndpointPool: credentialMode === "apikey",
@@ -1269,6 +1448,171 @@ export async function accountsRoutes(app: FastifyInstance) {
     },
   );
 
+  app.get<{ Params: { state: string } }>("/site-auth/target-browser/:state", async (request, reply) => {
+    const state = String(request.params.state || "").trim();
+    if (!state || !getTargetSiteBrowserSession(state)) {
+      return reply.code(404).type("text/html; charset=utf-8").send("Target site auth browser session not found");
+    }
+    return reply
+      .header("Cache-Control", "no-store")
+      .type("text/html; charset=utf-8")
+      .send(renderTargetSiteBrowserPage(state));
+  });
+
+  app.get<{ Params: { state: string } }>("/api/accounts/site-auth-browser-sessions/:state", async (request, reply) => {
+    const session = getTargetSiteBrowserSession(String(request.params.state || "").trim());
+    if (!session) return reply.code(404).send({ success: false, message: "target site auth browser session not found" });
+    return session;
+  });
+
+  app.get<{ Params: { state: string } }>("/api/accounts/site-auth-browser-sessions/:state/screenshot", async (request, reply) => {
+    try {
+      const buffer = await captureTargetSiteBrowserScreenshot(String(request.params.state || "").trim());
+      return reply.header("Cache-Control", "no-store").type("image/png").send(buffer);
+    } catch (error: any) {
+      return reply.code(404).send({ success: false, message: error?.message || "target site auth browser screenshot failed" });
+    }
+  });
+
+  app.post<{ Params: { state: string }; Body: unknown }>("/api/accounts/site-auth-browser-sessions/:state/input", async (request, reply) => {
+    const input = parseTargetSiteBrowserInputEvent(request.body);
+    if (!input) return reply.code(400).send({ success: false, message: "invalid target site auth browser input" });
+    try {
+      return await sendTargetSiteBrowserInput(String(request.params.state || "").trim(), input);
+    } catch (error: any) {
+      return reply.code(404).send({ success: false, message: error?.message || "target site auth browser input failed" });
+    }
+  });
+
+  app.post<{ Params: { state: string }; Querystring: { auto?: string } }>("/api/accounts/site-auth-browser-sessions/:state/extract", async (request, reply) => {
+    const state = String(request.params.state || "").trim();
+    const isAuto = String(request.query.auto || "") === "1";
+    const session = getTargetSiteBrowserSession(state);
+    if (!session) return reply.code(404).send({ success: false, message: "target site auth browser session not found" });
+    try {
+      const extracted = await readTargetSiteBrowserSessionAccessToken(state);
+      let extractedUsername: string | undefined;
+      let extractedPlatformUserId: number | undefined;
+      let requiresVerifiedTargetUser = false;
+      try {
+        const site = await db.select().from(schema.sites).where(eq(schema.sites.id, session.siteId)).get();
+        requiresVerifiedTargetUser = site ? isNewApiSessionPlatform(site.platform) || isManagedBrowserLoginSite(site) : false;
+        const pageUserInfo = await readTargetSiteBrowserSessionUserInfo(state);
+        let userInfo: any = pageUserInfo
+          ? { username: pageUserInfo.username, platformUserId: pageUserInfo.platformUserId }
+          : null;
+        if (!userInfo?.username && !userInfo?.platformUserId) {
+          const adapter = site ? getAdapter(site.platform) : null;
+          userInfo = adapter && typeof adapter.getUserInfo === "function"
+            ? await adapter.getUserInfo(site!.url, extracted.accessToken)
+            : null;
+        }
+        extractedUsername = typeof userInfo?.username === "string" && userInfo.username.trim()
+          ? userInfo.username.trim()
+          : (typeof userInfo?.displayName === "string" && userInfo.displayName.trim() ? userInfo.displayName.trim() : undefined);
+        extractedPlatformUserId = typeof userInfo?.platformUserId === "number" && Number.isFinite(userInfo.platformUserId) && userInfo.platformUserId > 0
+          ? Math.trunc(userInfo.platformUserId)
+          : undefined;
+      } catch {}
+      if (requiresVerifiedTargetUser && !extractedUsername && !extractedPlatformUserId) {
+        const pendingPayload = {
+          success: false,
+          pending: true,
+          message: "还没检测到目标站登录用户，请先在窗口里完成登录。",
+        };
+        return isAuto ? reply.code(202).send(pendingPayload) : reply.code(400).send(pendingPayload);
+      }
+      return {
+        success: true,
+        session: extracted,
+        state,
+        siteId: session.siteId,
+        provider: session.provider,
+        credentialId: session.credentialId,
+        targetSiteUrl: session.targetSiteUrl,
+        accessToken: extracted.accessToken,
+        ...(extractedUsername ? { username: extractedUsername } : {}),
+        ...(extractedPlatformUserId ? { platformUserId: extractedPlatformUserId } : {}),
+      };
+    } catch (error: any) {
+      const message = error?.message || "target site session extract failed";
+      if (isAuto && /session cookie not found/i.test(message)) {
+        return reply.code(202).send({ success: false, pending: true, message });
+      }
+      return reply.code(400).send({ success: false, message });
+    }
+  });
+
+  app.post<{ Params: { state: string }; Querystring: { auto?: string } }>("/api/accounts/site-auth-browser-sessions/:state/save", async (request, reply) => {
+    const state = String(request.params.state || "").trim();
+    const isAuto = String(request.query.auto || "") === "1";
+    const session = getTargetSiteBrowserSession(state);
+    if (!session) return reply.code(404).send({ success: false, message: "target site auth browser session not found" });
+    const site = await db.select().from(schema.sites).where(eq(schema.sites.id, session.siteId)).get();
+    if (!site) return reply.code(404).send({ success: false, message: "site not found" });
+    const adapter = getAdapter(site.platform);
+    if (!adapter) return reply.code(400).send({ success: false, message: `platform not supported: ${site.platform}` });
+    try {
+      const saved = await readTargetSiteBrowserSessionAccessToken(state);
+      let created: Awaited<ReturnType<typeof createManualAccount>> | null = null;
+      let fallbackAccount: typeof schema.accounts.$inferSelect | null = null;
+      let verificationPending = false;
+      try {
+        created = await createManualAccount({
+          body: {
+            siteId: session.siteId,
+            accessToken: saved.accessToken,
+            credentialMode: "session",
+            skipModelFetch: true,
+          },
+          site,
+          adapter,
+          credentialMode: "session",
+          rawAccessToken: saved.accessToken,
+        });
+      } catch (error) {
+        if (!isTargetBrowserSessionVerificationFailure(error)) throw error;
+        fallbackAccount = await createTargetBrowserSessionAccountWithoutVerification({
+          siteId: session.siteId,
+          site,
+          accessToken: saved.accessToken,
+          provider: session.provider,
+          credentialId: session.credentialId,
+        });
+        verificationPending = true;
+      }
+      const completedSession = await markTargetSiteBrowserSessionSaved(state);
+      let account = created?.account || fallbackAccount;
+      if (!account) throw new Error("创建账号失败");
+      account = await persistTargetBrowserSessionProfileForAccount({ state, account, site });
+      return {
+        success: true,
+        session: { ...saved, ...completedSession },
+        account,
+        tokenType: created?.tokenType || "session",
+        credentialMode: resolveStoredCredentialMode(account),
+        ...(verificationPending ? {
+          verificationPending: true,
+          message: "目标站 Session 已保存，后台校验信息待补全。",
+        } : {}),
+      };
+    } catch (error: any) {
+      const message = error?.message || "target site session save failed";
+      if (isAuto && /session cookie not found/i.test(message)) {
+        return reply.code(202).send({ success: false, pending: true, message });
+      }
+      return reply.code(400).send({ success: false, message });
+    }
+  });
+
+  app.post<{ Params: { state: string } }>("/api/accounts/site-auth-browser-sessions/:state/close", async (request, reply) => {
+    try {
+      return await closeTargetSiteBrowserSession(String(request.params.state || "").trim());
+    } catch (error: any) {
+      return reply.code(404).send({ success: false, message: error?.message || "target site auth browser close failed" });
+    }
+  });
+
   app.post<{ Body: unknown }>("/api/accounts/site-auth-browser-login/start", async (request, reply) => {
     const parsedBody = parseAccountSiteAuthBrowserLoginStartPayload(request.body);
     if (!parsedBody.success) {
@@ -1299,12 +1643,97 @@ export async function accountsRoutes(app: FastifyInstance) {
         });
     }
 
+    const managedBrowserLoginSite = isManagedBrowserLoginSite(site);
+    if (!body.credentialId && managedBrowserLoginSite) {
+      try {
+        const controlled = await startTargetSiteBrowserSession({
+          siteId: body.siteId,
+          credentialPayload: {},
+          loginUrl: resolveSiteLoginUrl(site),
+          targetSiteUrl: String(site.url || ""),
+          origin: resolveRequestOrigin(request),
+          autoAdvanceProvider: false,
+        });
+        return {
+          success: true,
+          siteId: body.siteId,
+          authorizationUrl: controlled.authorizationUrl,
+          targetSiteUrl: controlled.targetSiteUrl,
+          instructions: {
+            mode: "target_site_browser_login",
+            completionMode: "manual",
+            source: "managed_target_profile",
+          },
+        };
+      } catch (error: any) {
+        return reply
+          .code(400)
+          .send({ success: false, message: error?.message || "target site browser login start failed" });
+      }
+    }
+
+    let providerCredentialPayload: Record<string, unknown> | null = null;
+    if (body.credentialId) {
+      if (!body.provider) {
+        return reply
+          .code(400)
+          .send({ success: false, message: "provider is required when credentialId is provided" });
+      }
+      const credential = await getSiteAuthCredential(body.credentialId);
+      if (!credential) {
+        return reply
+          .code(404)
+          .send({ success: false, message: "site auth credential not found" });
+      }
+      if (credential.status !== "active" || !isControlledProviderCredential(credential, body.provider)) {
+        return reply
+          .code(400)
+          .send({ success: false, message: "site auth credential is not a saved provider login" });
+      }
+      providerCredentialPayload = await getSiteAuthCredentialPayload(credential.id);
+      if (!providerCredentialPayload) {
+        return reply
+          .code(404)
+          .send({ success: false, message: "site auth credential not found" });
+      }
+    }
+
+    if (!body.provider) {
+      return reply
+        .code(400)
+        .send({ success: false, message: "provider is required for third-party browser login" });
+    }
+
     try {
       const started = await startSiteAuthBrowserLogin({
         site,
         adapter,
         provider: body.provider,
       });
+      if (body.credentialId && providerCredentialPayload) {
+        const controlled = await startTargetSiteBrowserSession({
+          siteId: body.siteId,
+          provider: body.provider,
+          credentialId: body.credentialId,
+          credentialPayload: providerCredentialPayload,
+          loginUrl: started.authorizationUrl,
+          targetSiteUrl: started.targetSiteUrl,
+          origin: resolveRequestOrigin(request),
+        });
+        return {
+          success: true,
+          siteId: body.siteId,
+          provider: body.provider,
+          credentialId: body.credentialId,
+          authorizationUrl: controlled.authorizationUrl,
+          targetSiteUrl: controlled.targetSiteUrl,
+          instructions: {
+            mode: "target_site_browser_login",
+            completionMode: started.completionMode,
+            source: "saved_provider_credential",
+          },
+        };
+      }
       return {
         success: true,
         siteId: body.siteId,
@@ -1528,6 +1957,12 @@ export async function accountsRoutes(app: FastifyInstance) {
       };
     }
 
+    const targetSiteAuth = body.targetSiteAuth;
+    const isTargetSiteBrowserSession =
+      credentialMode === "session" &&
+      requestedTokens.length === 1 &&
+      targetSiteAuth?.source === "target-site-browser-login";
+
     try {
       const created = await createManualAccount({
         body,
@@ -1536,11 +1971,18 @@ export async function accountsRoutes(app: FastifyInstance) {
         credentialMode,
         rawAccessToken: requestedTokens[0]!,
       });
+      const account = isTargetSiteBrowserSession
+        ? await persistTargetBrowserSessionProfileForAccount({
+          state: targetSiteAuth?.state,
+          account: created.account,
+          site,
+        })
+        : created.account;
       return {
-        ...created.account,
+        ...account,
         tokenType: created.tokenType,
-        credentialMode: resolveStoredCredentialMode(created.account),
-        capabilities: buildCapabilitiesForAccount(created.account),
+        credentialMode: resolveStoredCredentialMode(account),
+        capabilities: buildCapabilitiesForAccount(account),
         modelCount: created.modelCount,
         apiTokenFound: created.apiTokenFound,
         usernameDetected: created.usernameDetected,
@@ -1549,6 +1991,33 @@ export async function accountsRoutes(app: FastifyInstance) {
         message: created.message,
       };
     } catch (err: any) {
+      if (isTargetSiteBrowserSession && isTargetBrowserSessionVerificationFailure(err)) {
+        const createdAccount = await createTargetBrowserSessionAccountWithoutVerification({
+          siteId: body.siteId,
+          site,
+          accessToken: requestedTokens[0]!,
+          username: body.username,
+          provider: targetSiteAuth?.provider,
+          credentialId: targetSiteAuth?.credentialId,
+        });
+        const account = await persistTargetBrowserSessionProfileForAccount({
+          state: targetSiteAuth?.state,
+          account: createdAccount,
+          site,
+        });
+        return {
+          ...account,
+          tokenType: "session",
+          credentialMode: resolveStoredCredentialMode(account),
+          capabilities: buildCapabilitiesForAccount(account),
+          modelCount: 0,
+          apiTokenFound: false,
+          usernameDetected: !!body.username,
+          queued: false,
+          verificationPending: true,
+          message: "目标站 Session 已保存，后台校验信息待补全。",
+        };
+      }
       return reply.code(400).send({
         success: false,
         requiresVerification: err?.requiresVerification === true,

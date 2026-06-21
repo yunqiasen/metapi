@@ -599,6 +599,7 @@ function normalizeLegacyPlatform(raw: string): string {
     'new-api',
     'one-api',
     'anyrouter',
+    'agentrouter',
     'one-hub',
     'done-hub',
     'sub2api',
@@ -608,6 +609,7 @@ function normalizeLegacyPlatform(raw: string): string {
 
   if (value.includes('wong')) return 'new-api';
   if (value.includes('anyrouter')) return 'anyrouter';
+  if (value.includes('agentrouter')) return 'agentrouter';
   if (value.includes('done')) return 'done-hub';
 
   return 'new-api';

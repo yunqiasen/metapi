@@ -359,8 +359,12 @@ export class NewApiAdapter extends BasePlatformAdapter {
   }
 
   private parseUserInfo(data: any): UserInfo {
+    const numericId = typeof data?.id === 'number'
+      ? data.id
+      : Number.parseInt(String(data?.id || ''), 10);
     return {
       username: data?.username || data?.display_name || '',
+      ...(Number.isInteger(numericId) && numericId > 0 ? { platformUserId: numericId } : {}),
       displayName: data?.display_name,
       email: data?.email,
       role: data?.role,

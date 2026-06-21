@@ -28,7 +28,7 @@ ARG KUBECTL_VERSION=v1.31.8
 ARG HELM_VERSION=v3.18.6
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl tar gzip \
+  && apt-get install -y --no-install-recommends ca-certificates curl tar gzip chromium fonts-liberation fonts-noto-cjk xvfb x11vnc novnc websockify \
   && case "$TARGETARCH" in \
     amd64|arm64) export ARCH="$TARGETARCH" ;; \
     arm) \
@@ -54,9 +54,14 @@ COPY --from=builder /app/drizzle ./drizzle
 
 RUN mkdir -p /app/data
 
-EXPOSE 4000
+EXPOSE 4000 6080
 
 ENV NODE_ENV=production
 ENV DATA_DIR=/app/data
+ENV SITE_AUTH_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV SITE_AUTH_NOVNC_PORT=6080
+ENV SITE_AUTH_VNC_PORT=5900
+ENV SITE_AUTH_BROWSER_HEADLESS=false
+ENV SITE_AUTH_BROWSER_DISPLAY=:99
 
 CMD ["sh", "-c", "node dist/server/db/migrate.js && node dist/server/index.js"]

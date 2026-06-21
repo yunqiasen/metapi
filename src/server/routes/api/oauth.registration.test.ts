@@ -28,6 +28,7 @@ describe('oauth route registration', () => {
     expect(isPublicApiRoute('/api/oauth/callback/codex')).toBe(true);
     expect(isPublicApiRoute('/api/oauth/callback/claude')).toBe(true);
     expect(isPublicApiRoute('/api/site-auth/callback/github')).toBe(true);
+    expect(isPublicApiRoute('/api/site-auth/browser-captures/state-1')).toBe(false);
     expect(isPublicApiRoute('/api/oauth/providers')).toBe(false);
   });
 });

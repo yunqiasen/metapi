@@ -29,6 +29,10 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    test: {
+      include: ['src/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
+      exclude: ['**/node_modules/**', '**/dist/**', '**/data/**'],
+    },
     server: {
       host: frontendHost,
       port: resolvedFrontendPort,
@@ -38,6 +42,10 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
         },
         '^/monitor-proxy($|/)': {
+          target: proxyTarget,
+          changeOrigin: true,
+        },
+        '^/site-auth($|/)': {
           target: proxyTarget,
           changeOrigin: true,
         },

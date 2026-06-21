@@ -116,11 +116,30 @@ const ACCOUNT_SEGMENTS: Array<{
 
 const SITE_SELECT_SEARCH_PLACEHOLDER = "筛选站点（名称 / 平台 / URL）";
 
+type TargetSiteAuthFormMeta = {
+  source: "target-site-browser-login";
+  provider?: string;
+  credentialId?: number;
+  state?: string;
+};
+
+type TokenFormState = {
+  siteId: number;
+  username: string;
+  accessToken: string;
+  platformUserId: string;
+  refreshToken: string;
+  tokenExpiresAt: string;
+  credentialMode: "session" | "apikey";
+  skipModelFetch: boolean;
+  targetSiteAuth?: TargetSiteAuthFormMeta;
+};
+
 function createLoginForm() {
   return { siteId: 0, username: "", password: "" };
 }
 
-function createTokenForm(credentialMode: "session" | "apikey" = "session") {
+function createTokenForm(credentialMode: "session" | "apikey" = "session"): TokenFormState {
   return {
     siteId: 0,
     username: "",
@@ -130,6 +149,7 @@ function createTokenForm(credentialMode: "session" | "apikey" = "session") {
     tokenExpiresAt: "",
     credentialMode,
     skipModelFetch: false,
+    targetSiteAuth: undefined,
   };
 }
 
@@ -153,6 +173,25 @@ function resolveSiteAuthProviderLabel(provider: string): string {
   if (provider === "google") return "Google";
   if (provider === "linuxdo") return "LinuxDO";
   return provider;
+}
+
+function appendMetapiAuthToken(url: string): string {
+  if (typeof window === 'undefined') return url;
+  const authToken = (window.localStorage?.getItem('auth_token') || '').trim();
+  if (!authToken) return url;
+  try {
+    const parsed = new URL(url, window.location.href);
+    parsed.searchParams.set('metapiAuthToken', authToken);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function isManagedBrowserAccountSite(site?: { platform?: unknown; url?: unknown } | null): boolean {
+  const platform = String(site?.platform || "").trim().toLowerCase();
+  const url = String(site?.url || "").trim().toLowerCase();
+  return platform === "anyrouter" || platform === "agentrouter" || url.includes("anyrouter") || url.includes("agentrouter");
 }
 
 export default function Accounts() {
@@ -309,6 +348,7 @@ export default function Accounts() {
     () => sites.find((item) => item.id === tokenForm.siteId) || null,
     [sites, tokenForm.siteId],
   );
+  const tokenSiteUsesManagedBrowserLogin = isManagedBrowserAccountSite(selectedTokenSite);
   const parsedApiKeys = useMemo(
     () =>
       activeSegment === "apikey"
@@ -326,6 +366,19 @@ export default function Accounts() {
         label: `${site.name} (${site.platform})`,
         description: site.url || undefined,
       })),
+    ],
+    [sites],
+  );
+  const loginSiteSelectOptions = useMemo(
+    () => [
+      { value: "0", label: "选择站点" },
+      ...sites
+        .filter((site: any) => !isManagedBrowserAccountSite(site))
+        .map((site: any) => ({
+          value: String(site.id),
+          label: `${site.name} (${site.platform})`,
+          description: site.url || undefined,
+        })),
     ],
     [sites],
   );
@@ -357,7 +410,13 @@ export default function Accounts() {
   }, []);
 
   useEffect(() => {
-    if (activeSegment !== "session" || addMode !== "token" || !showAdd || !tokenForm.siteId) {
+    if (
+      activeSegment !== "session" ||
+      addMode !== "token" ||
+      !showAdd ||
+      !tokenForm.siteId ||
+      tokenSiteUsesManagedBrowserLogin
+    ) {
       siteAuthRequirementRequestSeqRef.current += 1;
       setSiteAuthRequirements(null);
       setSiteAuthRequirementSiteId(null);
@@ -372,6 +431,7 @@ export default function Accounts() {
     loadSiteAuthRequirementsForSite,
     showAdd,
     tokenForm.siteId,
+    tokenSiteUsesManagedBrowserLogin,
   ]);
 
   const handleAddSiteAuthCredential = (provider: string) => {
@@ -379,32 +439,43 @@ export default function Accounts() {
     navigate({ pathname: "/oauth", search: `?${params.toString()}` });
   };
 
-  const handleStartSiteAuthBrowserLogin = async (provider: string) => {
+  const handleStartSiteAuthBrowserLogin = async (provider?: string, credentialId?: number) => {
     if (!tokenForm.siteId) {
       toast.error("请先选择站点");
       return;
     }
-    setSiteAuthBrowserLoginProvider(provider);
+    const loadingKey = provider || "target-site";
+    const popupName = provider
+      ? `metapi-target-site-auth-${provider}`
+      : `metapi-target-site-login-${tokenForm.siteId}`;
+    const popupFeatures = "popup=yes,width=1120,height=820,left=120,top=80";
+    const popup = typeof window !== "undefined" && typeof window.open === "function"
+      ? window.open("about:blank", popupName, popupFeatures)
+      : null;
+    if (!popup) {
+      toast.error("浏览器拦截了目标站授权窗口，请允许弹窗后重试");
+      return;
+    }
+    try {
+      popup.document.title = "Metapi 目标站授权";
+      popup.document.body.innerHTML = "<div style='font:14px sans-serif;padding:20px'>正在打开目标站授权窗口...</div>";
+    } catch {}
+    setSiteAuthBrowserLoginProvider(loadingKey);
     try {
       const started = await api.startAccountSiteAuthBrowserLogin({
         siteId: tokenForm.siteId,
-        provider,
+        ...(provider ? { provider } : {}),
+        ...(credentialId ? { credentialId } : {}),
       });
-      if (typeof window !== "undefined" && typeof window.open === "function") {
-        window.open(
-          started.authorizationUrl,
-          `metapi-target-site-auth-${provider}`,
-          "popup=yes,width=980,height=760,noopener,noreferrer",
-        );
-      }
-      toast.success("已打开目标站登录窗口。完成授权后保存该站 Session。");
-      openBrowserCredentialCapture({
-        provider,
-        siteId: tokenForm.siteId,
-        siteName: selectedTokenSite?.name,
-        siteUrl: started.targetSiteUrl || selectedTokenSite?.url,
-      });
+      popup.location.href = appendMetapiAuthToken(started.authorizationUrl);
+      try {
+        popup.focus();
+      } catch {}
+      toast.success(credentialId ? "已打开目标站授权窗口" : "已打开目标站登录窗口");
     } catch (error: any) {
+      try {
+        popup.close();
+      } catch {}
       toast.error(error?.message || "无法打开目标站授权登录");
     } finally {
       setSiteAuthBrowserLoginProvider(null);
@@ -448,6 +519,10 @@ export default function Accounts() {
   };
 
   const handleUseAccountPasswordLogin = () => {
+    if (tokenSiteUsesManagedBrowserLogin) {
+      toast.error("Any/Agent 请使用目标站真实登录窗口保存 Profile，不走账号密码登录");
+      return;
+    }
     setAddMode("login");
     setVerifyResult(null);
     setLoginForm((current) => ({
@@ -703,38 +778,49 @@ export default function Accounts() {
     }
   };
 
-  const handleTokenAdd = async () => {
-    if (!tokenForm.siteId || !tokenForm.accessToken) return;
+  const submitTokenForm = async (
+    form: TokenFormState = tokenForm,
+    options: { successMessage?: string } = {},
+  ) => {
+    if (!form.siteId || !form.accessToken) return;
+    const credentialMode = form.credentialMode;
+    const formParsedApiKeys =
+      credentialMode === "apikey" ? parseBatchApiKeys(form.accessToken) : [];
+    const formIsBatchApiKeyInput =
+      credentialMode === "apikey" && formParsedApiKeys.length > 1;
     if (
-      !isBatchApiKeyInput &&
+      !formIsBatchApiKeyInput &&
       !verifyResult?.success &&
-      !tokenForm.skipModelFetch
+      !form.skipModelFetch
     ) {
       toast.error("请先验证 Token 成功后再添加账号");
       return;
     }
-    const credentialMode = activeSegment === "apikey" ? "apikey" : "session";
     const initializationPreset = createIntentPreset;
+    const formSite = sites.find((site: any) => site.id === form.siteId) || null;
+    const formIsSub2Api =
+      (formSite?.platform || "").toLowerCase() === "sub2api";
     setSaving(true);
     try {
       const result = await api.addAccount({
-        siteId: tokenForm.siteId,
-        username: tokenForm.username.trim() || undefined,
-        accessToken: tokenForm.accessToken,
-        accessTokens: isBatchApiKeyInput ? parsedApiKeys : undefined,
-        platformUserId: tokenForm.platformUserId
-          ? parseInt(tokenForm.platformUserId)
+        siteId: form.siteId,
+        username: form.username.trim() || undefined,
+        accessToken: form.accessToken,
+        accessTokens: formIsBatchApiKeyInput ? formParsedApiKeys : undefined,
+        platformUserId: form.platformUserId
+          ? parseInt(form.platformUserId)
           : undefined,
         refreshToken:
-          isSub2ApiSelected && tokenForm.refreshToken.trim()
-            ? tokenForm.refreshToken.trim()
+          formIsSub2Api && form.refreshToken.trim()
+            ? form.refreshToken.trim()
             : undefined,
         tokenExpiresAt:
-          isSub2ApiSelected && tokenForm.tokenExpiresAt.trim()
-            ? Number.parseInt(tokenForm.tokenExpiresAt.trim(), 10)
+          formIsSub2Api && form.tokenExpiresAt.trim()
+            ? Number.parseInt(form.tokenExpiresAt.trim(), 10)
             : undefined,
         credentialMode,
-        skipModelFetch: tokenForm.skipModelFetch,
+        skipModelFetch: form.skipModelFetch,
+        ...(form.targetSiteAuth ? { targetSiteAuth: form.targetSiteAuth } : {}),
       });
       if (result?.batch) {
         closeAddPanel();
@@ -760,7 +846,7 @@ export default function Accounts() {
       const createdAccountId = Number(result?.id) || 0;
       const shouldSeedRecommendedModels =
         credentialMode === "apikey" &&
-        tokenForm.skipModelFetch &&
+        form.skipModelFetch &&
         applyCreatePresetModels &&
         recommendedModels.length > 0 &&
         createdAccountId > 0;
@@ -776,7 +862,9 @@ export default function Accounts() {
         }
       }
       closeAddPanel();
-      if (result.queued) {
+      if (options.successMessage) {
+        toast.success(options.successMessage);
+      } else if (result.queued) {
         toast.info(result.message || "账号已添加，后台正在同步初始化信息。");
       } else if (result.tokenType === "apikey") {
         toast.success("已添加为 API Key 账号（可用于代理转发）");
@@ -799,6 +887,63 @@ export default function Accounts() {
       setSaving(false);
     }
   };
+
+  const handleTokenAdd = async () => {
+    await submitTokenForm(tokenForm);
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    const handleTargetSiteAuthMessage = (event: MessageEvent) => {
+      const payload = event.data;
+      if (!payload || typeof payload !== "object") return;
+      if (payload.type !== "metapi-target-site-auth" || payload.status !== "success") return;
+      const accessToken = typeof payload.accessToken === "string" ? payload.accessToken.trim() : "";
+      if (!accessToken) {
+        toast.error("目标站小窗没有提取到 Session");
+        return;
+      }
+      const siteId = Number.parseInt(String(payload.siteId || tokenForm.siteId || ""), 10);
+      if (!Number.isFinite(siteId) || siteId <= 0) {
+        toast.error("目标站小窗没有返回站点 ID");
+        return;
+      }
+      const provider = typeof payload.provider === "string" ? payload.provider.trim() : "";
+      const state = typeof payload.state === "string" ? payload.state.trim() : "";
+      const rawCredentialId = Number.parseInt(String(payload.credentialId || ""), 10);
+      const rawPlatformUserId = Number.parseInt(String(payload.platformUserId || ""), 10);
+      const payloadUsername = typeof payload.username === "string" ? payload.username.trim() : "";
+      const username = payloadUsername || `${resolveSiteAuthProviderLabel(provider)} · 目标站`;
+      const nextForm: TokenFormState = {
+        ...tokenForm,
+        siteId,
+        username,
+        accessToken,
+        platformUserId: Number.isFinite(rawPlatformUserId) && rawPlatformUserId > 0
+          ? String(rawPlatformUserId)
+          : tokenForm.platformUserId,
+        credentialMode: "session",
+        skipModelFetch: true,
+        targetSiteAuth: {
+          source: "target-site-browser-login",
+          ...(provider ? { provider } : {}),
+          ...(Number.isFinite(rawCredentialId) && rawCredentialId > 0
+            ? { credentialId: rawCredentialId }
+            : {}),
+          ...(state ? { state } : {}),
+        },
+      };
+      setShowAdd(true);
+      setAddMode("token");
+      setVerifyResult(null);
+      setTokenForm(nextForm);
+      void submitTokenForm(nextForm, {
+        successMessage: "已自动填入目标站 Session，并提交添加连接",
+      });
+    };
+    window.addEventListener("message", handleTargetSiteAuthMessage);
+    return () => window.removeEventListener("message", handleTargetSiteAuthMessage);
+  }, [submitTokenForm, toast, tokenForm]);
 
   const withLoading = async (
     key: string,
@@ -1577,12 +1722,20 @@ export default function Accounts() {
     ((activeSegment === "apikey" && verifyResult.tokenType === "apikey") ||
       (activeSegment === "session" && verifyResult.tokenType === "session")),
   );
+  const canSubmitSessionConnection =
+    canAddVerifiedConnection ||
+    Boolean(
+      activeSegment === "session" &&
+        tokenForm.credentialMode === "session" &&
+        tokenForm.skipModelFetch &&
+        tokenForm.targetSiteAuth?.source === "target-site-browser-login",
+    );
   const canSubmitApiKeyConnection =
     activeSegment === "apikey"
       ? isBatchApiKeyInput ||
         canAddVerifiedConnection ||
         !!tokenForm.skipModelFetch
-      : canAddVerifiedConnection;
+      : canSubmitSessionConnection;
 
   return (
     <div className="animate-fade-in">
@@ -1963,34 +2116,36 @@ export default function Accounts() {
                   >
                     Session Token / Cookie
                   </button>
-                  <button
-                    onClick={() => {
-                      setAddMode("login");
-                      setVerifyResult(null);
-                    }}
-                    style={{
-                      flex: 1,
-                      padding: "8px 0",
-                      borderRadius: 6,
-                      fontSize: 13,
-                      fontWeight: 500,
-                      border: "none",
-                      cursor: "pointer",
-                      transition: "all 0.2s",
-                      background:
-                        addMode === "login"
-                          ? "var(--color-bg-card)"
-                          : "transparent",
-                      color:
-                        addMode === "login"
-                          ? "var(--color-primary)"
-                          : "var(--color-text-muted)",
-                      boxShadow:
-                        addMode === "login" ? "var(--shadow-sm)" : "none",
-                    }}
-                  >
-                    账号密码登录
-                  </button>
+                  {!tokenSiteUsesManagedBrowserLogin && (
+                    <button
+                      onClick={() => {
+                        setAddMode("login");
+                        setVerifyResult(null);
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: "8px 0",
+                        borderRadius: 6,
+                        fontSize: 13,
+                        fontWeight: 500,
+                        border: "none",
+                        cursor: "pointer",
+                        transition: "all 0.2s",
+                        background:
+                          addMode === "login"
+                            ? "var(--color-bg-card)"
+                            : "transparent",
+                        color:
+                          addMode === "login"
+                            ? "var(--color-primary)"
+                            : "var(--color-text-muted)",
+                        boxShadow:
+                          addMode === "login" ? "var(--shadow-sm)" : "none",
+                      }}
+                    >
+                      账号密码登录
+                    </button>
+                  )}
                 </div>
 
                 {addMode === "token" ? (
@@ -2057,6 +2212,7 @@ export default function Accounts() {
                       onChange={(nextValue) => {
                         const nextSiteId = Number.parseInt(nextValue, 10) || 0;
                         setTokenForm((f) => ({ ...f, siteId: nextSiteId }));
+                        setLoginForm((f) => ({ ...f, siteId: nextSiteId }));
                         setVerifyResult(null);
                       }}
                       options={siteSelectOptions}
@@ -2064,20 +2220,55 @@ export default function Accounts() {
                       searchable
                       searchPlaceholder={SITE_SELECT_SEARCH_PLACEHOLDER}
                     />
-                    <SiteAuthRequirementPicker
-                      data={siteAuthRequirements}
-                      loading={
-                        siteAuthRequirementsLoading &&
-                        siteAuthRequirementSiteId === tokenForm.siteId
-                      }
-                      loggingInCredentialId={siteAuthLoginCredentialId}
-                      startingProvider={siteAuthBrowserLoginProvider}
-                      onAddCredential={handleAddSiteAuthCredential}
-                      onStartBrowserLogin={handleStartSiteAuthBrowserLogin}
-                      onUseCredential={handleUseSiteAuthCredential}
-                      onOpenBrowserCredentialCapture={openBrowserCredentialCapture}
-                      onUseAccountPasswordLogin={handleUseAccountPasswordLogin}
-                    />
+                    {tokenSiteUsesManagedBrowserLogin ? (
+                      <div className="site-auth-session-capture-row" data-i18n-skip="true">
+                        <div>
+                          <div className="site-auth-session-capture-title">Any/Agent 真实站点登录维护</div>
+                          <div className="site-auth-session-capture-desc">
+                            不用提前保存 GitHub / LinuxDO 凭证，也不输入 Any/Agent 账号密码。打开目标站真实登录页后，你在窗口里自己点 GitHub / LinuxDO / 验证码，Metapi 只保存目标站 Session 和浏览器 Profile。
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-secondary site-auth-provider-action"
+                          onClick={() => handleStartSiteAuthBrowserLogin()}
+                          disabled={siteAuthBrowserLoginProvider === "target-site"}
+                        >
+                          {siteAuthBrowserLoginProvider === "target-site" ? "打开中..." : "打开站点登录窗口并保存 Profile"}
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <SiteAuthRequirementPicker
+                          data={siteAuthRequirements}
+                          loading={
+                            siteAuthRequirementsLoading &&
+                            siteAuthRequirementSiteId === tokenForm.siteId
+                          }
+                          loggingInCredentialId={siteAuthLoginCredentialId}
+                          startingProvider={siteAuthBrowserLoginProvider}
+                          onAddCredential={handleAddSiteAuthCredential}
+                          onStartBrowserLogin={handleStartSiteAuthBrowserLogin}
+                          onUseCredential={handleUseSiteAuthCredential}
+                          onUseAccountPasswordLogin={handleUseAccountPasswordLogin}
+                        />
+                        <div className="site-auth-session-capture-row" data-i18n-skip="true">
+                          <div>
+                            <div className="site-auth-session-capture-title">Session/Cookie 兼容导入</div>
+                            <div className="site-auth-session-capture-desc">
+                              目标站已经登录但无法走第三方授权时，用这里读取目标站 Session 和 UserID。
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn btn-secondary site-auth-provider-action"
+                            onClick={() => openBrowserCredentialCapture()}
+                          >
+                            自动获取浏览器凭证和 UserID
+                          </button>
+                        </div>
+                      </>
+                    )}
                     <input
                       placeholder="连接名称（可选）"
                       value={tokenForm.username}
@@ -2335,7 +2526,7 @@ export default function Accounts() {
                           saving ||
                           !tokenForm.siteId ||
                           !tokenForm.accessToken ||
-                          !canAddVerifiedConnection
+                          !canSubmitSessionConnection
                         }
                         className="btn btn-success"
                       >
@@ -2383,7 +2574,7 @@ export default function Accounts() {
                         const nextSiteId = Number.parseInt(nextValue, 10) || 0;
                         setLoginForm((f) => ({ ...f, siteId: nextSiteId }));
                       }}
-                      options={siteSelectOptions}
+                      options={loginSiteSelectOptions}
                       placeholder="选择站点"
                       searchable
                       searchPlaceholder={SITE_SELECT_SEARCH_PLACEHOLDER}

@@ -11,6 +11,7 @@ import {
 import { runWithSiteApiEndpointPool } from './siteApiEndpointService.js';
 import { type AccountCreatePayload } from '../contracts/accountsRoutePayloads.js';
 import { convergeAccountMutation } from './accountMutationWorkflow.js';
+import { isManagedBrowserLoginSite, resolveAccountBrowserProfileDir } from './accountManagedBrowserLogin.js';
 
 const ACCOUNT_VERIFY_TIMEOUT_MS = 10_000;
 
@@ -227,6 +228,20 @@ export async function createManualAccount({
   const extraConfigPatch: Record<string, unknown> = { credentialMode: resolvedCredentialMode };
   if (resolvedPlatformUserId) {
     extraConfigPatch.platformUserId = resolvedPlatformUserId;
+  }
+  if (resolvedCredentialMode === 'session' && isManagedBrowserLoginSite(site)) {
+    extraConfigPatch.managedBrowserProfile = {
+      enabled: true,
+      provider: (site.platform || '').toLowerCase(),
+      profileDir: resolveAccountBrowserProfileDir({ id: 0 }, site).replace(/0$/, '<accountId>'),
+      createdFrom: body.targetSiteAuth?.source || 'manual-session',
+      updatedAt: new Date().toISOString(),
+    };
+    if (body.targetSiteAuth?.source) {
+      extraConfigPatch.source = body.targetSiteAuth.source;
+      if (body.targetSiteAuth.provider) extraConfigPatch.sourceProvider = body.targetSiteAuth.provider;
+      if (body.targetSiteAuth.credentialId) extraConfigPatch.providerCredentialId = body.targetSiteAuth.credentialId;
+    }
   }
   if ((site.platform || '').toLowerCase() === 'sub2api') {
     const managedRefreshToken = typeof body.refreshToken === 'string' ? body.refreshToken.trim() : '';

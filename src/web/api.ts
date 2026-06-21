@@ -746,6 +746,8 @@ export type SiteAuthProviderInfo = {
   credentialTypes: string[];
   captureModes: string[];
   enabled: boolean;
+  authorizationConfigured?: boolean;
+  authorizationUnavailableReason?: string | null;
 };
 
 export type SiteAuthProvidersResponse = {
@@ -809,17 +811,18 @@ export type SiteAuthAuthorizationStartResponse = {
   state: string;
   authorizationUrl: string;
   instructions: {
-    redirectUri: string;
-    callbackPath: string;
-    manualCallbackDelayMs: number;
-    mode: "oauth" | "browser_login";
+    mode: "controlled_browser";
+    loginUrl: string;
+    viewUrl: string;
+    savePath: string;
+    screenshotPath: string;
   };
 };
 
 export type SiteAuthAuthorizationSessionResponse = {
   provider: string;
   state: string;
-  status: "pending" | "success" | "error";
+  status: "pending" | "success" | "error" | "closed";
   error?: string;
   credential?: SiteAuthCredentialInfo;
 };
@@ -870,6 +873,7 @@ export type SiteAuthRequirementInfo = {
   confidence: "explicit" | "detected";
   reason: string;
   availableCredentials: SiteAuthCredentialInfo[];
+  availableProviderCredentials?: SiteAuthCredentialInfo[];
 };
 
 export type SiteAuthRequirementsResponse = {
@@ -886,13 +890,14 @@ export type CreateAccountFromSiteAuthCredentialRequest = {
 
 export type StartAccountSiteAuthBrowserLoginRequest = {
   siteId: number;
-  provider: string;
+  provider?: string;
+  credentialId?: number;
 };
 
 export type StartAccountSiteAuthBrowserLoginResponse = {
   success: boolean;
   siteId: number;
-  provider: string;
+  provider?: string;
   authorizationUrl: string;
   targetSiteUrl?: string;
   instructions?: {

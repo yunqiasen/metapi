@@ -390,7 +390,7 @@ function buildTokenCandidates(input: EstimateProxyCostInput): string[] {
 
 async function fetchCommonPricing(baseUrl: string, token?: string, sitePlatform?: string): Promise<PricingData | null> {
   const normalizedPlatform = (sitePlatform || '').trim().toLowerCase();
-  const shouldTryShieldCookie = !!token && (normalizedPlatform === 'anyrouter' || token.includes('='));
+  const shouldTryShieldCookie = !!token && (normalizedPlatform === 'anyrouter' || normalizedPlatform === 'agentrouter' || token.includes('='));
   if (shouldTryShieldCookie) {
     const payload = await fetchJsonViaNewApiShield(`${baseUrl}/api/pricing`, token!);
     const data = normalizeCommonPricingPayload(payload);

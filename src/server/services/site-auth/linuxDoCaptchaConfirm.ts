@@ -11,13 +11,10 @@ export type LinuxDoCaptchaAutoConfirmResult = {
 const LINUXDO_CAPTCHA_TOKEN_SELECTORS = [
   'textarea[name="h-captcha-response"]',
   'textarea[name="g-recaptcha-response"]',
-  'textarea[name="cf-turnstile-response"]',
   'input[name="h-captcha-response"]',
   'input[name="g-recaptcha-response"]',
-  'input[name="cf-turnstile-response"]',
   '[name="h-captcha-response"]',
   '[name="g-recaptcha-response"]',
-  '[name="cf-turnstile-response"]',
 ] as const;
 
 export function findLinuxDoCaptchaVerifyActionInPage(): LinuxDoCaptchaAutoConfirmResult {
@@ -26,6 +23,9 @@ export function findLinuxDoCaptchaVerifyActionInPage(): LinuxDoCaptchaAutoConfir
     if (host !== 'linux.do' && !host.endsWith('.linux.do')) {
       return { clicked: false, reason: 'not-linuxdo' };
     }
+
+    const pageText = document.body?.innerText || document.body?.textContent || '';
+    if (!/人机验证|hcaptcha|h-captcha/i.test(pageText)) return { clicked: false, reason: 'no-token' };
 
     const tokenSelectors = LINUXDO_CAPTCHA_TOKEN_SELECTORS.filter((selector) => (
       Array.from(document.querySelectorAll(selector)).some((node) => {
@@ -57,7 +57,7 @@ export function findLinuxDoCaptchaVerifyActionInPage(): LinuxDoCaptchaAutoConfir
       const parentClassName = String((element.parentElement as HTMLElement | null)?.className || '');
       const modalClassName = String((element.closest('[role="dialog"],.modal,.d-modal,.d-modal__container,.modal-inner') as HTMLElement | null)?.className || '');
       if (/btn-primary|primary|confirm|submit/i.test(`${className} ${parentClassName}`)) score += 20;
-      if (/modal|dialog|captcha/i.test(`${modalClassName} ${document.body.innerText || ''}`)) score += 10;
+      if (/modal|dialog|captcha|人机验证/i.test(`${modalClassName} ${pageText}`)) score += 10;
       return score;
     };
 
@@ -146,7 +146,6 @@ async function clickLinuxDoCaptchaVerifyWithTrustedInput(page: Page): Promise<Li
     await page.mouse.down({ button: 'left' });
     await page.waitForTimeout(90);
     await page.mouse.up({ button: 'left' });
-    await page.keyboard.press('Enter').catch(() => {});
     return { ...action, clicked: true };
   } catch {
     const fallback = await page.evaluate(confirmLinuxDoCaptchaVerifyInPage).catch(() => null);
@@ -154,12 +153,15 @@ async function clickLinuxDoCaptchaVerifyWithTrustedInput(page: Page): Promise<Li
   }
 }
 
-export function startLinuxDoCaptchaAutoConfirm(page: Page, input: { intervalMs?: number; minClickIntervalMs?: number } = {}): () => void {
-  const intervalMs = Math.max(300, input.intervalMs ?? 900);
+export function startLinuxDoCaptchaAutoConfirm(page: Page, input: { intervalMs?: number; minClickIntervalMs?: number; minProbeIntervalMs?: number; initialDelayMs?: number } = {}): () => void {
+  const intervalMs = Math.max(500, input.intervalMs ?? 1500);
   const minClickIntervalMs = Math.max(1000, input.minClickIntervalMs ?? 2500);
+  const minProbeIntervalMs = Math.max(3000, input.minProbeIntervalMs ?? 7000);
+  const initialDelayMs = Math.max(0, input.initialDelayMs ?? 5000);
   let stopped = false;
   let inFlight = false;
   let lastClickAt = 0;
+  let lastProbeAt = 0;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   const stop = () => {
@@ -175,7 +177,10 @@ export function startLinuxDoCaptchaAutoConfirm(page: Page, input: { intervalMs?:
       return;
     }
     if (inFlight) return;
-    if (Date.now() - lastClickAt < minClickIntervalMs) return;
+    const now = Date.now();
+    if (now - lastClickAt < minClickIntervalMs) return;
+    if (now - lastProbeAt < minProbeIntervalMs) return;
+    lastProbeAt = now;
     inFlight = true;
     try {
       const result = await clickLinuxDoCaptchaVerifyWithTrustedInput(page).catch(() => null);
@@ -188,6 +193,10 @@ export function startLinuxDoCaptchaAutoConfirm(page: Page, input: { intervalMs?:
   timer = setInterval(() => { void tick(); }, intervalMs);
   timer.unref?.();
   page.once('close', stop);
-  void tick();
-  return stop;
+  const firstTimer = setTimeout(() => { void tick(); }, initialDelayMs);
+  firstTimer.unref?.();
+  return () => {
+    clearTimeout(firstTimer);
+    stop();
+  };
 }

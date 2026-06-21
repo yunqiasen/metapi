@@ -23,6 +23,7 @@ function installDom(html: string, url = 'https://linux.do/login') {
 describe('LinuxDO hCaptcha confirm helper', () => {
   it('clicks the visible verify button only after a captcha token exists', () => {
     const dom = installDom(`
+      <div>人机验证</div>
       <textarea name="h-captcha-response">token-1</textarea>
       <button id="verify">验证</button>
     `);
@@ -35,6 +36,7 @@ describe('LinuxDO hCaptcha confirm helper', () => {
 
   it('does not click before the captcha token exists', () => {
     const dom = installDom(`
+      <div>人机验证</div>
       <textarea name="h-captcha-response"></textarea>
       <button id="verify">验证</button>
     `);
@@ -45,8 +47,22 @@ describe('LinuxDO hCaptcha confirm helper', () => {
     expect(clickSpy).not.toHaveBeenCalled();
   });
 
+
+  it('does not click Cloudflare Turnstile challenge checkbox pages', () => {
+    const dom = installDom(`
+      <div>请验证您是真人</div>
+      <input name="cf-turnstile-response" value="turnstile-token">
+      <div role="button" id="cf">请验证您是真人</div>
+    `);
+    const clickSpy = vi.fn();
+    dom.window.document.getElementById('cf')?.addEventListener('click', clickSpy);
+
+    expect(confirmLinuxDoCaptchaVerifyInPage()).toEqual({ clicked: false, reason: 'no-token' });
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
   it('does not click on non-LinuxDO pages', () => {
-    installDom('<textarea name="h-captcha-response">token-1</textarea><button>验证</button>', 'https://example.com/login');
+    installDom('<div>人机验证</div><textarea name="h-captcha-response">token-1</textarea><button>验证</button>', 'https://example.com/login');
 
     expect(confirmLinuxDoCaptchaVerifyInPage()).toEqual({ clicked: false, reason: 'not-linuxdo' });
   });

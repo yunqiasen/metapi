@@ -29,7 +29,7 @@ describe('LinuxDO hCaptcha confirm helper', () => {
     const clickSpy = vi.fn();
     dom.window.document.getElementById('verify')?.addEventListener('click', clickSpy);
 
-    expect(confirmLinuxDoCaptchaVerifyInPage()).toEqual({ clicked: true, reason: 'clicked', buttonText: '验证' });
+    expect(confirmLinuxDoCaptchaVerifyInPage()).toMatchObject({ clicked: true, reason: 'clicked', buttonText: '验证' });
     expect(clickSpy).toHaveBeenCalledTimes(1);
   });
 

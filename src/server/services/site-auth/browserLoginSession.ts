@@ -230,11 +230,12 @@ function buildNoVncUrl(origin: string): string {
       resize: 'remote',
       path: 'websockify',
       reconnect: '1',
+      show_dot: '1',
     }).toString();
     parsed.hash = '';
     return parsed.toString();
   } catch {
-    return 'http://127.0.0.1:' + port + '/vnc.html?autoconnect=1&resize=remote&path=websockify&reconnect=1';
+    return 'http://127.0.0.1:' + port + '/vnc.html?autoconnect=1&resize=remote&path=websockify&reconnect=1&show_dot=1';
   }
 }
 

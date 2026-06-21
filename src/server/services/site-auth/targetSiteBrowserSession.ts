@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { connect } from 'node:net';
+import { connect, createServer } from 'node:net';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { cp, mkdir, rm, unlink } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { BrowserContext, Cookie, Page, Response as PlaywrightResponse } from 'playwright-core';
 import { config } from '../../config.js';
 import { loadChromiumBrowserType } from '../browserAutomationRuntime.js';
@@ -21,6 +21,7 @@ const SESSION_CLEANUP_DELAY_MS = 5 * 60_000;
 const DEFAULT_NOVNC_PORT = 6080;
 const DEFAULT_VNC_PORT = 5900;
 const NOVNC_READY_DELAY_MS = 800;
+const CHROMIUM_PROFILE_LOCK_FILES = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'] as const;
 const FALLBACK_SCREENSHOT_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAABQAAAANECAYAAABd2Q4SAAAAAXNSR0IArs4c6QAAIABJREFUeJzt3TEOwjAMQNFc/v9PZgYGAkKkC9tOaZ0E0iRbswYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwX+oDAAFwB8kAAAAASUVORK5CYII=',
   'base64',
@@ -61,8 +62,11 @@ type TargetSiteBrowserSession = {
   viewUrl: string;
   noVncUrl: string;
   profileDir: string;
-  context: BrowserContext;
-  page: Page;
+  context?: BrowserContext;
+  page?: Page;
+  browserProcess?: ChildProcess;
+  debuggingPort?: number;
+  browserMode?: 'playwright' | 'standalone';
   status: TargetSiteBrowserSessionStatus;
   userInfo?: TargetSiteBrowserUserInfo;
   currentUrl?: string;
@@ -181,6 +185,21 @@ async function isTcpPortOpen(port: number): Promise<boolean> {
     socket.once('connect', () => finish(true));
     socket.once('timeout', () => finish(false));
     socket.once('error', () => finish(false));
+  });
+}
+
+async function allocateLocalTcpPort(): Promise<number> {
+  return new Promise((resolvePort, rejectPort) => {
+    const server = createServer();
+    server.once('error', rejectPort);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close(() => {
+        if (port > 0) resolvePort(port);
+        else rejectPort(new Error('failed to allocate local port'));
+      });
+    });
   });
 }
 
@@ -320,7 +339,7 @@ function normalizeBaseUrl(url: string): string {
 
 function buildNoVncUrl(origin: string): string {
   const port = resolveNoVncPort();
-  const fallback = `http://127.0.0.1:${port}/vnc.html?autoconnect=1&resize=remote&path=websockify`;
+  const fallback = `http://127.0.0.1:${port}/vnc.html?autoconnect=1&resize=remote&path=websockify&show_dot=1`;
   try {
     const parsed = new URL(resolveOrigin(origin));
     parsed.port = String(port);
@@ -330,12 +349,49 @@ function buildNoVncUrl(origin: string): string {
       resize: 'remote',
       path: 'websockify',
       reconnect: '1',
+      show_dot: '1',
     }).toString();
     parsed.hash = '';
     return parsed.toString();
   } catch {
     return fallback;
   }
+}
+
+
+function resolveProviderWorkingProfileDir(provider: SiteAuthProviderId): string {
+  return resolve(config.dataDir, 'site-auth-working-profiles', provider);
+}
+
+async function clearChromiumProfileLocks(profileDir: string): Promise<void> {
+  await Promise.all(CHROMIUM_PROFILE_LOCK_FILES.map((name) => (
+    rm(join(profileDir, name), { force: true }).catch(() => {})
+  )));
+}
+
+async function seedStandaloneProfileFromProvider(provider: SiteAuthProviderId | undefined, profileDir: string): Promise<void> {
+  if (provider !== 'linuxdo') return;
+  const providerProfileDir = resolveProviderWorkingProfileDir(provider);
+  if (!existsSync(providerProfileDir)) return;
+  await rm(profileDir, { recursive: true, force: true }).catch(() => {});
+  await mkdir(dirname(profileDir), { recursive: true });
+  await cp(providerProfileDir, profileDir, { recursive: true }).catch(async () => {
+    await mkdir(profileDir, { recursive: true });
+  });
+  await clearChromiumProfileLocks(profileDir);
+}
+
+function isLinuxDoStandaloneTarget(input: { provider?: SiteAuthProviderId; credentialPayload: Record<string, unknown>; loginUrl: string; targetSiteUrl?: string }): boolean {
+  if (input.provider === 'linuxdo') return true;
+  const hostMatches = (value: string | undefined, pattern: RegExp) => {
+    try {
+      return pattern.test(new URL(value || '').hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  };
+  return hostMatches(input.loginUrl, /(^|\.)linux\.do$/)
+    || hostMatches(input.targetSiteUrl, /(^|\.)(anyrouter\.top|agentrouter\.org)$/);
 }
 
 function htmlEscape(value: string): string {
@@ -538,7 +594,10 @@ async function closeSessionBrowser(session: TargetSiteBrowserSession): Promise<v
     session.stopCaptchaAutoConfirm?.();
   } catch {}
   try {
-    await session.context.close();
+    await session.context?.close();
+  } catch {}
+  try {
+    if (session.browserProcess && session.browserProcess.exitCode === null) session.browserProcess.kill('SIGTERM');
   } catch {}
   scheduleSessionCleanup(session);
 }
@@ -649,6 +708,80 @@ export function buildTargetSessionCookieHeader(cookies: BrowserCookieArtifact[],
   return buildCookieHeader(domainCookies);
 }
 
+
+type StartedTargetBrowser = {
+  context?: BrowserContext;
+  page?: Page;
+  browserProcess?: ChildProcess;
+  debuggingPort?: number;
+  browserMode: 'playwright' | 'standalone';
+  stopCaptchaAutoConfirm: () => void;
+};
+
+async function waitForDebuggingPort(port: number, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isTcpPortOpen(port)) return;
+    await sleep(250);
+  }
+  throw new Error('standalone browser debugging port not ready');
+}
+
+async function launchStandaloneBrowser(input: {
+  profileDir: string;
+  loginUrl: string;
+  provider?: SiteAuthProviderId;
+}): Promise<StartedTargetBrowser> {
+  const display = resolveBrowserDisplay();
+  await ensureXvfbStarted(display);
+  await seedStandaloneProfileFromProvider(input.provider, input.profileDir);
+  await mkdir(input.profileDir, { recursive: true });
+  await clearChromiumProfileLocks(input.profileDir);
+  const debuggingPort = await allocateLocalTcpPort();
+  const proxyUrl = resolveBrowserProxyUrl();
+  const args = [
+    `--user-data-dir=${input.profileDir}`,
+    `--remote-debugging-port=${debuggingPort}`,
+    '--remote-debugging-address=127.0.0.1',
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--password-store=basic',
+    '--use-mock-keychain',
+    '--lang=zh-CN,zh',
+    `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
+    ...(proxyUrl ? [`--proxy-server=${proxyUrl}`] : []),
+    input.loginUrl,
+  ];
+  const browserProcess = spawn(resolveBrowserExecutablePath(), args, {
+    env: { ...process.env, DISPLAY: display },
+    stdio: 'ignore',
+  });
+  browserProcess.unref?.();
+  await waitForDebuggingPort(debuggingPort).catch((error) => {
+    if (browserProcess.exitCode === null) browserProcess.kill('SIGTERM');
+    throw error;
+  });
+  return {
+    browserProcess,
+    debuggingPort,
+    browserMode: 'standalone',
+    stopCaptchaAutoConfirm: () => {},
+  };
+}
+
+async function connectStandaloneContext<T>(session: TargetSiteBrowserSession, fn: (context: BrowserContext, page: Page) => Promise<T>): Promise<T> {
+  if (!session.debuggingPort) throw new Error('standalone browser debugging port missing');
+  const chromium = await loadChromiumBrowserType();
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${session.debuggingPort}`);
+  const context = browser.contexts()[0];
+  const page = context?.pages()[0];
+  if (!context || !page) throw new Error('standalone browser page not found');
+  return fn(context, page);
+}
+
 async function startBrowser(input: {
   profileDir: string;
   loginUrl: string;
@@ -656,7 +789,10 @@ async function startBrowser(input: {
   provider?: SiteAuthProviderId;
   credentialPayload: Record<string, unknown>;
   autoAdvanceProvider?: boolean;
-}): Promise<{ context: BrowserContext; page: Page; stopCaptchaAutoConfirm: () => void }> {
+}): Promise<StartedTargetBrowser> {
+  if (isLinuxDoStandaloneTarget(input)) {
+    return launchStandaloneBrowser({ profileDir: input.profileDir, loginUrl: input.loginUrl, provider: input.provider });
+  }
   const chromium = await loadChromiumBrowserType();
   const proxyUrl = resolveBrowserProxyUrl();
   const headless = resolveBrowserHeadless();
@@ -717,7 +853,7 @@ async function startBrowser(input: {
   if (input.provider && input.autoAdvanceProvider !== false) {
     await advanceTargetProviderLogin(page, input.provider, { loginUrl: input.loginUrl, targetSiteUrl: input.targetSiteUrl });
   }
-  return { context, page, stopCaptchaAutoConfirm };
+  return { context, page, stopCaptchaAutoConfirm, browserMode: 'playwright' };
 }
 
 export async function startTargetSiteBrowserSession(input: {
@@ -742,11 +878,10 @@ export async function startTargetSiteBrowserSession(input: {
     await closeSessionBrowser(session);
   });
   await mkdir(profileDir, { recursive: true });
-  let context: BrowserContext;
-  let page: Page;
+  let started: StartedTargetBrowser;
   let stopCaptchaAutoConfirm: (() => void) | undefined;
   try {
-    const started = await startBrowser({
+    started = await startBrowser({
       profileDir,
       loginUrl,
       provider: input.provider,
@@ -754,8 +889,6 @@ export async function startTargetSiteBrowserSession(input: {
       credentialPayload: input.credentialPayload,
       autoAdvanceProvider: input.autoAdvanceProvider,
     });
-    context = started.context;
-    page = started.page;
     stopCaptchaAutoConfirm = started.stopCaptchaAutoConfirm;
   } catch (error) {
     releaseBrowserDisplay(leaseKey);
@@ -774,13 +907,16 @@ export async function startTargetSiteBrowserSession(input: {
     viewUrl,
     noVncUrl,
     profileDir,
-    context,
-    page,
+    context: started.context,
+    page: started.page,
+    browserProcess: started.browserProcess,
+    debuggingPort: started.debuggingPort,
+    browserMode: started.browserMode,
     status: 'pending',
-    currentUrl: page.url(),
+    currentUrl: started.page?.url() || loginUrl,
     stopCaptchaAutoConfirm,
   };
-  watchTargetBrowserUserInfo(session);
+  if (session.page) watchTargetBrowserUserInfo(session);
   sessions.set(state, session);
   return {
     ...toSessionInfo(session),
@@ -801,6 +937,7 @@ export function getTargetSiteBrowserSession(state: string): TargetSiteBrowserSes
 
 export async function captureTargetSiteBrowserScreenshot(state: string): Promise<Buffer> {
   const session = getSession(state);
+  if (!session.page || !session.context) return VALID_FALLBACK_SCREENSHOT_PNG;
   try {
     return await session.page.screenshot({
       type: 'png',
@@ -830,6 +967,7 @@ export async function captureTargetSiteBrowserScreenshot(state: string): Promise
 export async function sendTargetSiteBrowserInput(state: string, event: TargetSiteBrowserInputEvent): Promise<TargetSiteBrowserSessionInfo> {
   const session = getSession(state);
   if (session.status !== 'pending') return toSessionInfo(session);
+  if (!session.page) return toSessionInfo(session);
   if (event.type === 'click') await session.page.mouse.click(event.x, event.y, { delay: 45 });
   else if (event.type === 'mouseDown') { await session.page.mouse.move(event.x, event.y, { steps: 2 }); await session.page.mouse.down(); }
   else if (event.type === 'mouseMove') await session.page.mouse.move(event.x, event.y, { steps: 2 });
@@ -860,6 +998,7 @@ function normalizeTargetBrowserUserInfo(payload: unknown): TargetSiteBrowserUser
 }
 
 function watchTargetBrowserUserInfo(session: TargetSiteBrowserSession): void {
+  if (!session.page) return;
   session.page.on('response', async (response) => {
     try {
       const url = new URL(response.url());
@@ -875,12 +1014,16 @@ function watchTargetBrowserUserInfo(session: TargetSiteBrowserSession): void {
 export async function readTargetSiteBrowserSessionAccessToken(state: string): Promise<TargetSiteBrowserSaveResult> {
   const session = getSession(state);
   const targetHost = getTargetHost(session.targetSiteUrl);
-  const cookies = (await session.context.cookies()) as BrowserCookieArtifact[];
-  const accessToken = buildTargetSessionCookieHeader(cookies, targetHost);
-  session.currentUrl = session.page.url();
-  if (!accessToken) {
-    throw new Error('target site session cookie not found');
-  }
+  const readFromContext = async (context: BrowserContext, page?: Page) => {
+    const cookies = (await context.cookies()) as BrowserCookieArtifact[];
+    const accessToken = buildTargetSessionCookieHeader(cookies, targetHost);
+    if (page) session.currentUrl = page.url();
+    if (!accessToken) throw new Error('target site session cookie not found');
+    return accessToken;
+  };
+  const accessToken = session.context
+    ? await readFromContext(session.context, session.page)
+    : await connectStandaloneContext(session, (context, page) => readFromContext(context, page));
   return {
     ...toSessionInfo(session),
     accessToken,
@@ -963,6 +1106,13 @@ async function readTargetSiteBrowserPageUserInfo(page: Page): Promise<TargetSite
 
 async function verifyTargetSiteBrowserUserInfoViaConsole(session: TargetSiteBrowserSession): Promise<TargetSiteBrowserUserInfo | null> {
   if (session.userInfo) return session.userInfo;
+  if (!session.page) {
+    return connectStandaloneContext(session, async (_context, page) => {
+      const shadowSession = { ...session, page } as TargetSiteBrowserSession;
+      return verifyTargetSiteBrowserUserInfoViaConsole(shadowSession);
+    });
+  }
+  const page = session.page;
   const consoleUrl = resolveTargetConsoleUrl(session.targetSiteUrl);
   let capturedUserInfo: TargetSiteBrowserUserInfo | null = null;
   const onResponse = async (response: PlaywrightResponse) => {
@@ -976,22 +1126,22 @@ async function verifyTargetSiteBrowserUserInfoViaConsole(session: TargetSiteBrow
     } catch {}
   };
 
-  session.page.on('response', onResponse);
+  page.on('response', onResponse);
   try {
-    await session.page.goto(consoleUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(async () => {
-      await session.page.evaluate((url) => { window.location.href = url; }, consoleUrl).catch(() => {});
+    await page.goto(consoleUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(async () => {
+      await page.evaluate((url) => { window.location.href = url; }, consoleUrl).catch(() => {});
     });
-    await session.page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
+    await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
     const deadline = Date.now() + TARGET_USER_VERIFY_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (capturedUserInfo) break;
-      capturedUserInfo = await readTargetSiteBrowserPageUserInfo(session.page);
+      capturedUserInfo = await readTargetSiteBrowserPageUserInfo(page);
       if (capturedUserInfo) break;
-      await session.page.waitForTimeout(500).catch(() => {});
+      await page.waitForTimeout(500).catch(() => {});
     }
   } finally {
-    session.page.off('response', onResponse);
-    session.currentUrl = session.page.url();
+    page.off('response', onResponse);
+    session.currentUrl = page.url();
   }
 
   if (capturedUserInfo) session.userInfo = capturedUserInfo;
@@ -1000,8 +1150,19 @@ async function verifyTargetSiteBrowserUserInfoViaConsole(session: TargetSiteBrow
 
 export async function readTargetSiteBrowserSessionUserInfo(state: string): Promise<TargetSiteBrowserUserInfo | null> {
   const session = getSession(state);
-  session.currentUrl = session.page.url();
   if (session.userInfo) return session.userInfo;
+  if (!session.page) {
+    return connectStandaloneContext(session, async (_context, page) => {
+      session.currentUrl = page.url();
+      const pageUserInfo = await readTargetSiteBrowserPageUserInfo(page);
+      if (pageUserInfo) {
+        session.userInfo = pageUserInfo;
+        return pageUserInfo;
+      }
+      return verifyTargetSiteBrowserUserInfoViaConsole({ ...session, page } as TargetSiteBrowserSession);
+    });
+  }
+  session.currentUrl = session.page.url();
   const pageUserInfo = await readTargetSiteBrowserPageUserInfo(session.page);
   if (pageUserInfo) {
     session.userInfo = pageUserInfo;

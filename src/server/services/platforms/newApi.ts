@@ -80,13 +80,21 @@ export class NewApiAdapter extends BasePlatformAdapter {
   }
 
   private authHeaders(accessToken: string, userId?: number): Record<string, string> {
-    const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}` };
+    return {
+      Authorization: `Bearer ${accessToken}`,
+      ...this.userIdHeaders(userId),
+    };
+  }
+
+  private userIdHeaders(userId?: number | null): Record<string, string> {
+    const headers: Record<string, string> = {};
     if (userId) {
       const value = String(userId);
       headers['New-API-User'] = value;
       headers['Veloera-User'] = value;
       headers['voapi-user'] = value;
       headers['User-id'] = value;
+      headers['X-User-Id'] = value;
       headers['Rix-Api-User'] = value;
       headers['neo-api-user'] = value;
     }
@@ -802,7 +810,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     for (const cookie of this.buildCookieCandidates(token)) {
       try {
         const headers: Record<string, string> = { Cookie: cookie };
-        if (platformUserId) headers['New-Api-User'] = String(platformUserId);
+        Object.assign(headers, this.userIdHeaders(platformUserId));
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/user/self`, { headers });
         if (res?.success && res?.data) return res;
         if (typeof res?.message === 'string' && res.message.trim()) {
@@ -819,7 +827,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
       for (const id of candidates) {
         try {
           const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/user/self`, {
-            headers: { Cookie: cookie, 'New-Api-User': String(id) },
+            headers: { Cookie: cookie, ...this.userIdHeaders(id) },
           });
           if (res?.success && res?.data) return id;
         } catch {}
@@ -845,7 +853,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     for (const cookie of this.buildCookieCandidates(token)) {
       try {
         const headers: Record<string, string> = { Cookie: cookie };
-        if (userId) headers['New-Api-User'] = String(userId);
+        Object.assign(headers, this.userIdHeaders(userId));
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/token/?p=0&size=100`, { headers });
         const normalized = this.normalizeTokenItems(this.parseTokenItems(res));
         if (normalized.length > 0) return normalized;
@@ -858,7 +866,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     for (const cookie of this.buildCookieCandidates(token)) {
       try {
         const headers: Record<string, string> = { Cookie: cookie };
-        if (userId) headers['New-Api-User'] = String(userId);
+        Object.assign(headers, this.userIdHeaders(userId));
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/user/models`, { headers });
         if (Array.isArray(res?.data) && res.data.length > 0) return res.data.filter(Boolean);
         if (res?.data && typeof res.data === 'object') {
@@ -1222,7 +1230,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
 
         try {
           const headers: Record<string, string> = { Cookie: cookie };
-          if (cookieUserId) headers['New-Api-User'] = String(cookieUserId);
+          Object.assign(headers, this.userIdHeaders(cookieUserId));
           const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/user/checkin`, {
             method: 'POST',
             headers,
@@ -1381,7 +1389,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     for (const cookie of this.buildCookieCandidates(accessToken)) {
       try {
         const headers: Record<string, string> = { Cookie: cookie };
-        if (cookieUserId) headers['New-Api-User'] = String(cookieUserId);
+        Object.assign(headers, this.userIdHeaders(cookieUserId));
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/token/`, {
           method: 'POST',
           headers,
@@ -1424,7 +1432,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     const cookieUserId = resolvedUserId || await this.probeUserIdByCookie(baseUrl, accessToken);
     for (const cookie of this.buildCookieCandidates(accessToken)) {
       const headers: Record<string, string> = { Cookie: cookie };
-      if (cookieUserId) headers['New-Api-User'] = String(cookieUserId);
+      Object.assign(headers, this.userIdHeaders(cookieUserId));
 
       try {
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/user/self/groups`, { headers });
@@ -1492,7 +1500,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     const cookieUserId = resolvedUserId || await this.probeUserIdByCookie(baseUrl, accessToken);
     for (const cookie of this.buildCookieCandidates(accessToken)) {
       const headers: Record<string, string> = { Cookie: cookie };
-      if (cookieUserId) headers['New-Api-User'] = String(cookieUserId);
+      Object.assign(headers, this.userIdHeaders(cookieUserId));
 
       try {
         if (!tokenId) {

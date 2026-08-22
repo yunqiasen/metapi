@@ -12,6 +12,12 @@ describe('checkinRewardParser', () => {
     expect(parseCheckinRewardAmount('checkin success, reward=5')).toBe(5);
   });
 
+  it('does not treat a current total quota as a check-in reward', () => {
+    expect(parseCheckinRewardAmount('已签到，额度无新增，当前总额度 850')).toBe(0);
+    expect(parseCheckinRewardAmount('签到成功，当前总额度 850')).toBe(0);
+    expect(parseCheckinRewardAmount('签到成功，获得 $25 额度')).toBe(25);
+  });
+
   it('returns zero for missing or non-positive values', () => {
     expect(parseCheckinRewardAmount('')).toBe(0);
     expect(parseCheckinRewardAmount(null)).toBe(0);

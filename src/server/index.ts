@@ -26,6 +26,11 @@ import { siteAnnouncementsRoutes } from './routes/api/siteAnnouncements.js';
 import { updateCenterRoutes } from './routes/api/updateCenter.js';
 import { proxyRoutes } from './routes/proxy/router.js';
 import { startScheduler } from './services/checkinScheduler.js';
+import { shutdownTargetSiteBrowserSessions } from './services/site-auth/targetSiteBrowserSession.js';
+import { shutdownSiteAuthBrowserSessions } from './services/site-auth/browserLoginSession.js';
+import { shutdownManagedAccountBrowserRuntime } from './services/accountManagedBrowserLogin.js';
+import { cleanupOrphanedBrowserProfiles } from './services/browserProfileCleanupService.js';
+import { terminateOrphanedBrowserProcesses } from './services/browserOrphanProcessCleanupService.js';
 import * as routeRefreshWorkflow from './services/routeRefreshWorkflow.js';
 import { startProxyFileRetentionService, stopProxyFileRetentionService } from './services/proxyFileRetentionService.js';
 import { setLegacyProxyLogRetentionFallbackEnabled, stopProxyLogRetentionService } from './services/proxyLogRetentionService.js';
@@ -199,6 +204,20 @@ try {
 }
 
 await ensureOauthProviderSitesExist();
+const terminatedBrowserProcesses = await terminateOrphanedBrowserProcesses(config.dataDir).catch((error) => {
+  console.warn(`Failed to terminate orphaned browser processes: ${(error as Error)?.message || 'unknown error'}`);
+  return 0;
+});
+if (terminatedBrowserProcesses > 0) {
+  console.log(`Terminated orphaned browser processes: ${terminatedBrowserProcesses}`);
+}
+const browserProfileCleanup = await cleanupOrphanedBrowserProfiles().catch((error) => {
+  console.warn(`Failed to clean browser profiles: ${(error as Error)?.message || 'unknown error'}`);
+  return null;
+});
+if (browserProfileCleanup && (browserProfileCleanup.removedTargetSiteProfiles || browserProfileCleanup.removedAccountProfiles)) {
+  console.log(`Cleaned browser profiles: target=${browserProfileCleanup.removedTargetSiteProfiles}, account=${browserProfileCleanup.removedAccountProfiles}`);
+}
 
 const app = Fastify(buildFastifyOptions(config));
 
@@ -280,6 +299,9 @@ try {
 setLegacyProxyLogRetentionFallbackEnabled(!config.logCleanupConfigured);
 startProxyFileRetentionService();
 app.addHook('onClose', async () => {
+  await shutdownTargetSiteBrowserSessions();
+  await shutdownSiteAuthBrowserSessions();
+  await shutdownManagedAccountBrowserRuntime();
   stopSiteAnnouncementPolling();
   stopUpdateCenterPolling();
   stopProxyFileRetentionService();
@@ -291,6 +313,18 @@ app.addHook('onClose', async () => {
   await stopSub2ApiManagedRefreshScheduler();
   await stopOAuthLoopbackCallbackServers();
 });
+
+let appClosing = false;
+const closeAppOnSignal = () => {
+  if (appClosing) return;
+  appClosing = true;
+  void app.close().then(() => process.exit(0)).catch((error) => {
+    app.log.error(error);
+    process.exit(1);
+  });
+};
+process.once('SIGTERM', closeAppOnSignal);
+process.once('SIGINT', closeAppOnSignal);
 
 // Start server
 try {
@@ -306,5 +340,5 @@ try {
   }
 } catch (err) {
   app.log.error(err);
-  process.exit(1);
+  process.exitCode = 1;
 }

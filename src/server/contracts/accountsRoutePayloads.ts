@@ -78,8 +78,13 @@ const accountSiteAuthLoginPayloadSchema = z.object({
 
 const accountSiteAuthBrowserLoginStartPayloadSchema = z.object({
   siteId: z.number().int().positive(),
+  accountId: z.number().int().positive().optional(),
   provider: siteAuthProviderSchema.optional(),
   credentialId: z.number().int().positive().optional(),
+}).passthrough();
+
+const accountBrowserProfileRebindPayloadSchema = z.object({
+  state: z.string().trim().min(1),
 }).passthrough();
 
 const accountManualModelsPayloadSchema = z.object({
@@ -87,6 +92,7 @@ const accountManualModelsPayloadSchema = z.object({
 }).passthrough();
 
 export type AccountBatchPayload = z.output<typeof accountBatchPayloadSchema>;
+export type AccountBrowserProfileRebindPayload = z.output<typeof accountBrowserProfileRebindPayloadSchema>;
 export type AccountCreatePayload = z.output<typeof accountCreatePayloadSchema>;
 export type AccountHealthRefreshPayload = z.output<typeof accountHealthRefreshPayloadSchema>;
 export type AccountLoginPayload = z.output<typeof accountLoginPayloadSchema>;
@@ -209,6 +215,11 @@ export function parseAccountBatchPayload(input: unknown):
 export function parseAccountRebindSessionPayload(input: unknown):
 { success: true; data: AccountRebindSessionPayload } | { success: false; error: string } {
   return parseAccountsPayload(accountRebindSessionPayloadSchema, input);
+}
+
+export function parseAccountBrowserProfileRebindPayload(input: unknown):
+{ success: true; data: AccountBrowserProfileRebindPayload } | { success: false; error: string } {
+  return parseAccountsPayload(accountBrowserProfileRebindPayloadSchema, input);
 }
 
 export function parseAccountHealthRefreshPayload(input: unknown):

@@ -5,6 +5,7 @@ import {
   hasOauthProvider,
   mergeAccountExtraConfig,
 } from './accountExtraConfig.js';
+import { withAccountBrowserProfileLease } from './accountBrowserProfileLease.js';
 
 export type RuntimeHealthState = 'healthy' | 'unhealthy' | 'degraded' | 'unknown' | 'disabled';
 
@@ -197,24 +198,26 @@ export async function setAccountRuntimeHealth(
     checkedAt?: string | null;
   },
 ): Promise<RuntimeHealthInfo | null> {
-  try {
-    const query = db.select().from(schema.accounts).where(eq(schema.accounts.id, accountId)) as any;
-    const account = typeof query?.get === 'function' ? await query.get() : null;
-    if (!account) return null;
+  return withAccountBrowserProfileLease(accountId, async () => {
+    try {
+      const query = db.select().from(schema.accounts).where(eq(schema.accounts.id, accountId)) as any;
+      const account = typeof query?.get === 'function' ? await query.get() : null;
+      if (!account) return null;
 
-    const health = buildRuntimeHealthPatch(input);
-    const nextExtraConfig = applyRuntimeHealthToExtraConfig(account.extraConfig, health);
+      const health = buildRuntimeHealthPatch(input);
+      const nextExtraConfig = applyRuntimeHealthToExtraConfig(account.extraConfig, health);
 
-    await db.update(schema.accounts)
-      .set({
-        extraConfig: nextExtraConfig,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(schema.accounts.id, accountId))
-      .run();
+      await db.update(schema.accounts)
+        .set({
+          extraConfig: nextExtraConfig,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(schema.accounts.id, accountId))
+        .run();
 
-    return health;
-  } catch {
-    return null;
-  }
+      return health;
+    } catch {
+      return null;
+    }
+  });
 }

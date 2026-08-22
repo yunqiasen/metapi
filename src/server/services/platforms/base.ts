@@ -117,8 +117,13 @@ export type ExternalBrowserLoginStartResult = {
   completionMode: 'target_site_session';
 };
 
+export type CheckinMode = 'standard' | 'browser-reauth' | 'browser-visit' | 'browser-visit-fallback';
+export type BalanceFallbackMode = 'none' | 'managed-browser-profile';
+
 export interface PlatformAdapter {
   readonly platformName: string;
+  readonly checkinMode: CheckinMode;
+  readonly balanceFallbackMode: BalanceFallbackMode;
   detect(url: string): Promise<boolean>;
   login(baseUrl: string, username: string, password: string): Promise<LoginResult>;
   getUserInfo(baseUrl: string, accessToken: string, platformUserId?: number): Promise<UserInfo | null>;
@@ -138,6 +143,8 @@ export interface PlatformAdapter {
 
 export abstract class BasePlatformAdapter implements PlatformAdapter {
   abstract readonly platformName: string;
+  readonly checkinMode: CheckinMode = 'standard';
+  readonly balanceFallbackMode: BalanceFallbackMode = 'none';
 
   abstract detect(url: string): Promise<boolean>;
   abstract checkin(baseUrl: string, accessToken: string): Promise<CheckinResult>;

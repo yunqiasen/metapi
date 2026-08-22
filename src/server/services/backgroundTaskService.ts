@@ -28,6 +28,8 @@ export type BackgroundTask = {
 };
 
 type TaskMessageTemplate = string | ((task: BackgroundTask) => string);
+type TaskEventLevel = 'info' | 'warning' | 'error';
+type TaskLevelTemplate = TaskEventLevel | ((task: BackgroundTask) => TaskEventLevel);
 
 type BackgroundTaskStartOptions = {
   type: string;
@@ -40,6 +42,8 @@ type BackgroundTaskStartOptions = {
   failureTitle?: TaskMessageTemplate;
   successMessage?: TaskMessageTemplate;
   failureMessage?: TaskMessageTemplate;
+  successLevel?: TaskLevelTemplate;
+  resultError?: TaskMessageTemplate;
 };
 
 const TASK_TTL_MS = 6 * 60 * 60 * 1000;
@@ -79,6 +83,17 @@ function resolveTaskMessage(template: TaskMessageTemplate | undefined, task: Bac
   }
   if (typeof template === 'string' && template.trim()) return template.trim();
   return fallback;
+}
+
+function resolveTaskLevel(
+  template: TaskLevelTemplate | undefined,
+  task: BackgroundTask,
+  fallback: TaskEventLevel,
+): TaskEventLevel {
+  const level = typeof template === 'function' ? template(task) : template;
+  return level === 'warning' || level === 'error' || level === 'info'
+    ? level
+    : fallback;
 }
 
 function setTaskStatus(task: BackgroundTask, patch: Partial<BackgroundTask>) {
@@ -179,17 +194,38 @@ async function runTask(taskId: string, options: BackgroundTaskStartOptions, runn
 
   try {
     const result = await runner();
+    task = setTaskStatus(task, { result });
+    const resultError = resolveTaskMessage(options.resultError, task, '');
+    if (resultError) {
+      task = setTaskStatus(task, {
+        status: 'failed',
+        finishedAt: nowIso(),
+        error: resultError,
+        message: `${task.title} 失败：${resultError}`,
+      });
+
+      const eventTitle = resolveTaskMessage(options.failureTitle, task, `${task.title} 失败`);
+      const eventMessage = resolveTaskMessage(options.failureMessage, task, task.message);
+      task = setTaskStatus(task, { message: eventMessage });
+      appendTaskEvent('error', eventTitle, eventMessage, task.id);
+
+      if (options.notifyOnFailure ?? true) {
+        await sendNotification(eventTitle, eventMessage, 'error');
+      }
+      return;
+    }
+
     task = setTaskStatus(task, {
       status: 'succeeded',
       finishedAt: nowIso(),
-      result,
       error: null,
     });
 
     const eventTitle = resolveTaskMessage(options.successTitle, task, `${task.title} 已完成`);
     const eventMessage = resolveTaskMessage(options.successMessage, task, `${task.title} 已完成`);
     task = setTaskStatus(task, { message: eventMessage });
-    appendTaskEvent('info', eventTitle, eventMessage, task.id);
+    const eventLevel = resolveTaskLevel(options.successLevel, task, 'info');
+    appendTaskEvent(eventLevel, eventTitle, eventMessage, task.id);
 
     if (options.notifyOnSuccess) {
       await sendNotification(eventTitle, eventMessage, 'info');

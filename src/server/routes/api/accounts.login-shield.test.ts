@@ -6,12 +6,21 @@ import { join } from 'node:path';
 import { resetRequestRateLimitStore } from '../../middleware/requestRateLimit.js';
 
 const loginMock = vi.fn();
+const managedPasswordLoginMock = vi.fn();
 
 vi.mock('../../services/platforms/index.js', () => ({
   getAdapter: () => ({
     login: (...args: unknown[]) => loginMock(...args),
   }),
 }));
+
+vi.mock('../../services/accountManagedBrowserLogin.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/accountManagedBrowserLogin.js')>();
+  return {
+    ...actual,
+    loginManagedAccountWithPassword: (...args: unknown[]) => managedPasswordLoginMock(...args),
+  };
+});
 
 type DbModule = typeof import('../../db/index.js');
 
@@ -37,6 +46,8 @@ describe('accounts login shield detection', () => {
 
   beforeEach(async () => {
     loginMock.mockReset();
+    managedPasswordLoginMock.mockReset();
+    managedPasswordLoginMock.mockRejectedValue(new Error('managed browser unavailable in route unit test'));
     resetRequestRateLimitStore();
 
     await db.delete(schema.proxyLogs).run();

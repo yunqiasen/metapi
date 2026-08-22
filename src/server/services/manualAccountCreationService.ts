@@ -11,7 +11,12 @@ import {
 import { runWithSiteApiEndpointPool } from './siteApiEndpointService.js';
 import { type AccountCreatePayload } from '../contracts/accountsRoutePayloads.js';
 import { convergeAccountMutation } from './accountMutationWorkflow.js';
-import { isManagedBrowserLoginSite, resolveAccountBrowserProfileDir } from './accountManagedBrowserLogin.js';
+import { discardManagedAccountBrowserProfile, persistManagedAccountBrowserProfile } from './accountManagedBrowserLogin.js';
+import {
+  discardAgentRouterSessionVerificationProfile,
+  verifyAgentRouterSessionInBrowser,
+  type AgentRouterSessionBrowserVerification,
+} from './agentRouterSessionBrowserVerification.js';
 
 const ACCOUNT_VERIFY_TIMEOUT_MS = 10_000;
 
@@ -33,6 +38,9 @@ export type CreateManualAccountParams = {
   credentialMode: AccountCredentialMode;
   rawAccessToken: string;
   usernameOverride?: string;
+  prepareAccountForInitialization?: (
+    account: typeof schema.accounts.$inferSelect,
+  ) => Promise<typeof schema.accounts.$inferSelect>;
 };
 
 export type CreateManualAccountResult = {
@@ -62,6 +70,15 @@ async function withTimeout<T>(fn: () => Promise<T>, timeoutMs: number, timeoutMe
 
 function buildAccountVerifyTimeoutMessage(): string {
   return `Token verification timed out (${Math.max(1, Math.round(ACCOUNT_VERIFY_TIMEOUT_MS / 1000))}s)`;
+}
+
+function isAccountVerifyTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /Token verification timed out/i.test(message) || /timeout/i.test(message);
+}
+
+function isAgentRouterSite(site: { platform?: unknown }): boolean {
+  return String(site.platform || '').trim().toLowerCase() === 'agentrouter';
 }
 
 async function getNextAccountSortOrder(): Promise<number> {
@@ -159,6 +176,7 @@ export async function createManualAccount({
   credentialMode,
   rawAccessToken,
   usernameOverride,
+  prepareAccountForInitialization,
 }: CreateManualAccountParams): Promise<CreateManualAccountResult> {
   let username = typeof usernameOverride === 'string'
     ? usernameOverride.trim()
@@ -167,6 +185,8 @@ export async function createManualAccount({
   let apiToken = (body.apiToken || '').trim();
   let tokenType: 'session' | 'apikey' | 'unknown' = 'unknown';
   let verifiedModels: string[] = [];
+  let browserVerification: AgentRouterSessionBrowserVerification | null = null;
+  let persistedBrowserProfileDir: string | null = null;
 
   if (credentialMode === 'apikey') {
     if (body.skipModelFetch === true) {
@@ -194,54 +214,70 @@ export async function createManualAccount({
       if (!apiToken) apiToken = rawAccessToken;
     }
   } else {
-    const verifyResult = await withTimeout(
-      () => adapter.verifyToken(site.url, rawAccessToken, body.platformUserId),
-      ACCOUNT_VERIFY_TIMEOUT_MS,
-      buildAccountVerifyTimeoutMessage(),
-    );
-    tokenType = verifyResult.tokenType;
-    if (tokenType === 'unknown') {
-      const error = new Error('Token 验证失败，请先点击“验证 Token”，验证成功后再绑定账号');
-      (error as Error & { requiresVerification?: boolean }).requiresVerification = true;
-      throw error;
+    let verifyResult: Awaited<ReturnType<typeof adapter.verifyToken>> | null = null;
+    try {
+      verifyResult = await withTimeout(
+        () => adapter.verifyToken(site.url, rawAccessToken, body.platformUserId),
+        ACCOUNT_VERIFY_TIMEOUT_MS,
+        buildAccountVerifyTimeoutMessage(),
+      );
+    } catch (error) {
+      if (!isAgentRouterSite(site) || !isAccountVerifyTimeoutError(error)) throw error;
+      browserVerification = await verifyAgentRouterSessionInBrowser({
+        site,
+        accessToken: rawAccessToken,
+        platformUserId: body.platformUserId,
+      });
     }
 
-    if (credentialMode === 'session' && tokenType !== 'session') {
-      throw new Error('当前凭证是 API Key，请切换到 API Key 模式，或改用 Session Token');
+    if (!browserVerification && verifyResult?.tokenType === 'unknown' && isAgentRouterSite(site)) {
+      browserVerification = await verifyAgentRouterSessionInBrowser({
+        site,
+        accessToken: rawAccessToken,
+        platformUserId: body.platformUserId,
+      });
     }
 
-    if (tokenType === 'session') {
-      if (!username && verifyResult.userInfo?.username) username = String(verifyResult.userInfo.username).trim();
-      if (!apiToken && verifyResult.apiToken) apiToken = String(verifyResult.apiToken).trim();
-    } else if (tokenType === 'apikey') {
-      accessToken = '';
-      if (!apiToken) apiToken = rawAccessToken;
-      verifiedModels = Array.isArray(verifyResult.models)
-        ? verifyResult.models.filter((item: unknown) => typeof item === 'string' && item.trim().length > 0)
-        : [];
+    if (browserVerification) {
+      tokenType = 'session';
+      accessToken = browserVerification.accessToken;
+      if (!username && browserVerification.username) username = browserVerification.username;
+    } else {
+      tokenType = verifyResult?.tokenType || 'unknown';
+      if (tokenType === 'unknown') {
+        const error = new Error('Token 验证失败，请先点击“验证 Token”，验证成功后再绑定账号');
+        (error as Error & { requiresVerification?: boolean }).requiresVerification = true;
+        throw error;
+      }
+
+      if (credentialMode === 'session' && tokenType !== 'session') {
+        throw new Error('当前凭证是 API Key，请切换到 API Key 模式，或改用 Session Token');
+      }
+
+      if (tokenType === 'session') {
+        if (!username && verifyResult?.userInfo?.username) username = String(verifyResult.userInfo.username).trim();
+        if (!apiToken && verifyResult?.apiToken) apiToken = String(verifyResult.apiToken).trim();
+      } else if (tokenType === 'apikey') {
+        accessToken = '';
+        if (!apiToken) apiToken = rawAccessToken;
+        verifiedModels = Array.isArray(verifyResult?.models)
+          ? verifyResult.models.filter((item: unknown) => typeof item === 'string' && item.trim().length > 0)
+          : [];
+      }
     }
   }
 
   const resolvedPlatformUserId =
-    body.platformUserId || guessPlatformUserIdFromUsername(username) || undefined;
+    body.platformUserId || browserVerification?.platformUserId || guessPlatformUserIdFromUsername(username) || undefined;
   const resolvedCredentialMode: AccountCredentialMode = tokenType === 'apikey' ? 'apikey' : 'session';
   const extraConfigPatch: Record<string, unknown> = { credentialMode: resolvedCredentialMode };
   if (resolvedPlatformUserId) {
     extraConfigPatch.platformUserId = resolvedPlatformUserId;
   }
-  if (resolvedCredentialMode === 'session' && isManagedBrowserLoginSite(site)) {
-    extraConfigPatch.managedBrowserProfile = {
-      enabled: true,
-      provider: (site.platform || '').toLowerCase(),
-      profileDir: resolveAccountBrowserProfileDir({ id: 0 }, site).replace(/0$/, '<accountId>'),
-      createdFrom: body.targetSiteAuth?.source || 'manual-session',
-      updatedAt: new Date().toISOString(),
-    };
-    if (body.targetSiteAuth?.source) {
-      extraConfigPatch.source = body.targetSiteAuth.source;
-      if (body.targetSiteAuth.provider) extraConfigPatch.sourceProvider = body.targetSiteAuth.provider;
-      if (body.targetSiteAuth.credentialId) extraConfigPatch.providerCredentialId = body.targetSiteAuth.credentialId;
-    }
+  if (resolvedCredentialMode === 'session' && body.targetSiteAuth?.source) {
+    extraConfigPatch.source = body.targetSiteAuth.source;
+    if (body.targetSiteAuth.provider) extraConfigPatch.sourceProvider = body.targetSiteAuth.provider;
+    if (body.targetSiteAuth.credentialId) extraConfigPatch.providerCredentialId = body.targetSiteAuth.credentialId;
   }
   if ((site.platform || '').toLowerCase() === 'sub2api') {
     const managedRefreshToken = typeof body.refreshToken === 'string' ? body.refreshToken.trim() : '';
@@ -266,12 +302,69 @@ export async function createManualAccount({
       apiToken: apiToken || undefined,
       checkinEnabled: tokenType === 'session' ? (body.checkinEnabled ?? true) : false,
       extraConfig,
+      ...(browserVerification?.balance ? {
+        balance: browserVerification.balance.balance,
+        balanceUsed: browserVerification.balance.used,
+        quota: browserVerification.balance.quota,
+        lastBalanceRefresh: new Date().toISOString(),
+      } : {}),
       isPinned: false,
       sortOrder: await getNextAccountSortOrder(),
     },
     insertErrorMessage: '创建账号失败',
     loadErrorMessage: '创建账号失败',
   });
+
+  let account = await db.select().from(schema.accounts).where(eq(schema.accounts.id, result.id)).get();
+  if (!account) {
+    throw new Error('创建账号失败');
+  }
+  try {
+    if (browserVerification) {
+      const finalProfileDir = await persistManagedAccountBrowserProfile(
+        browserVerification.profileDir,
+        account,
+        site,
+      );
+      persistedBrowserProfileDir = finalProfileDir;
+      const profileExtraConfig = mergeAccountExtraConfig(account.extraConfig, {
+        credentialMode: 'session',
+        platformUserId: browserVerification.platformUserId,
+        managedBrowserProfile: {
+          enabled: true,
+          provider: browserVerification.provider,
+          profileDir: finalProfileDir,
+          createdFrom: 'manual-session-browser-verification',
+          updatedAt: new Date().toISOString(),
+        },
+      });
+      await db.update(schema.accounts)
+        .set({
+          accessToken: browserVerification.accessToken,
+          ...(browserVerification.username ? { username: browserVerification.username } : {}),
+          extraConfig: profileExtraConfig,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(schema.accounts.id, result.id))
+        .run();
+      account = await db.select().from(schema.accounts).where(eq(schema.accounts.id, result.id)).get();
+      if (!account) throw new Error('创建账号失败');
+    }
+
+    if (prepareAccountForInitialization) {
+      account = await prepareAccountForInitialization(account);
+    }
+  } catch (error) {
+    await db.delete(schema.accounts).where(eq(schema.accounts.id, result.id)).run();
+    if (persistedBrowserProfileDir) {
+      await discardManagedAccountBrowserProfile(persistedBrowserProfileDir);
+    }
+    throw error;
+  } finally {
+    if (browserVerification) {
+      await discardAgentRouterSessionVerificationProfile(browserVerification.profileDir);
+    }
+  }
 
   const shouldQueueInitialization = tokenType === 'session' || body.skipModelFetch !== true;
   let queuedTaskId: string | undefined;
@@ -300,11 +393,6 @@ export async function createManualAccount({
     );
     queuedTaskId = task.id;
     queuedMessage = buildQueuedAccountInitializationMessage(tokenType, body.skipModelFetch);
-  }
-
-  const account = await db.select().from(schema.accounts).where(eq(schema.accounts.id, result.id)).get();
-  if (!account) {
-    throw new Error('创建账号失败');
   }
 
   return {

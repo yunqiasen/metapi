@@ -42,6 +42,21 @@ describe('sqlite default path resolution', () => {
     expect(sqlitePath).toBe(resolve(process.env.DATA_DIR, 'hub.db'));
   });
 
+  it('keeps the cached default repo data directory isolated when another test mutates DATA_DIR later', async () => {
+    process.env.DATA_DIR = './data';
+    delete process.env.DB_URL;
+    vi.resetModules();
+
+    await import('../config.js');
+    process.env.DATA_DIR = resolve(tmpdir(), 'metapi-late-data-dir-mutation');
+    dbModule = await import('./index.js');
+    const sqlitePath = dbModule.__dbProxyTestUtils.resolveSqlitePath();
+    const sharedRepoPath = resolve('./data/hub.db');
+
+    expect(sqlitePath).not.toBe(sharedRepoPath);
+    expect(sqlitePath).toBe(resolve(process.env.DATA_DIR, 'hub.db'));
+  });
+
   it('ignores the default repo DATA_DIR under vitest and still isolates sqlite', async () => {
     process.env.DATA_DIR = './data';
     delete process.env.DB_URL;

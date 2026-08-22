@@ -890,6 +890,7 @@ export type CreateAccountFromSiteAuthCredentialRequest = {
 
 export type StartAccountSiteAuthBrowserLoginRequest = {
   siteId: number;
+  accountId?: number;
   provider?: string;
   credentialId?: number;
 };
@@ -897,6 +898,7 @@ export type StartAccountSiteAuthBrowserLoginRequest = {
 export type StartAccountSiteAuthBrowserLoginResponse = {
   success: boolean;
   siteId: number;
+  accountId?: number;
   provider?: string;
   authorizationUrl: string;
   targetSiteUrl?: string;
@@ -993,6 +995,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  rebindAccountBrowserProfile: (id: number, data: { state: string }) =>
+    request(`/api/accounts/${id}/rebind-browser-profile`, {
+      method: "POST",
+      body: JSON.stringify(data),
+      timeoutMs: 180_000,
+    }),
   rebindAccountSession: (
     id: number,
     data: {
@@ -1019,7 +1027,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
   refreshBalance: (id: number) =>
-    request(`/api/accounts/${id}/balance`, { method: "POST" }),
+    request(`/api/accounts/${id}/balance?background=1`, { method: "POST" }),
   refreshAccountCredential: (id: number) =>
     request(`/api/accounts/${id}/credential/refresh`, {
       method: "POST",

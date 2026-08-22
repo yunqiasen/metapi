@@ -367,10 +367,6 @@ async function ensureNoVncGatewayStarted(display: string): Promise<void> {
   return noVncStartPromise;
 }
 
-process.once('exit', () => { stopNoVncGateway(); stopXvfb(); });
-process.once('SIGINT', () => { stopNoVncGateway(); stopXvfb(); process.exit(130); });
-process.once('SIGTERM', () => { stopNoVncGateway(); stopXvfb(); process.exit(143); });
-
 function resolveProfileDir(provider: SiteAuthProviderId): string {
   return resolve(config.dataDir, 'site-auth-working-profiles', provider);
 }
@@ -744,6 +740,21 @@ function htmlEscape(value: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+
+
+export async function shutdownSiteAuthBrowserSessions(): Promise<void> {
+  const activeSessions = Array.from(sessions.values());
+  for (const session of activeSessions) {
+    if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
+    if (session.status === 'pending') session.status = 'closed';
+    await finishBrowserSession(session).catch(() => {});
+    if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
+  }
+  sessions.clear();
+  stopNoVncGateway();
+  stopXvfb();
 }
 
 export function renderSiteAuthBrowserPage(state: string): string {

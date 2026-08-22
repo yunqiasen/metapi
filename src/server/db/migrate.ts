@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveSqliteDbPath } from './sqlitePath.js';
 
 type MigrationJournalEntry = {
   tag: string;
@@ -85,20 +86,6 @@ const VERIFIED_SCHEMA_MARKERS: SchemaMarker[] = [
   { table: 'proxy_logs', column: 'first_byte_latency_ms' },
 ];
 
-
-function resolveSqliteDbPath(): string {
-  const raw = (config.dbUrl || '').trim();
-  if (!raw) return resolve(`${config.dataDir}/hub.db`);
-  if (raw === ':memory:') return raw;
-  if (raw.startsWith('file://')) {
-    const parsed = new URL(raw);
-    return decodeURIComponent(parsed.pathname);
-  }
-  if (raw.startsWith('sqlite://')) {
-    return resolve(raw.slice('sqlite://'.length).trim());
-  }
-  return resolve(raw);
-}
 
 function resolveMigrationsFolder(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), '../../../drizzle');
@@ -679,7 +666,7 @@ function bootstrapLegacyDrizzleMigrations(sqlite: Database.Database, migrationsF
 }
 
 export function runSqliteMigrations(): void {
-  const dbPath = resolveSqliteDbPath();
+  const dbPath = resolveSqliteDbPath(config);
   const migrationsFolder = resolveMigrationsFolder();
   if (dbPath !== ':memory:') {
     mkdirSync(dirname(dbPath), { recursive: true });

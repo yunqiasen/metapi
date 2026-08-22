@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildStoredSub2ApiSubscriptionSummary,
+  getAgentRouterBalanceProxyUrlFromExtraConfig,
   getCredentialModeFromExtraConfig,
+  getManagedBrowserLoginProvider,
+  guessManagedBrowserLoginProviderFromUsername,
   hasOauthProvider,
   getPlatformUserIdFromExtraConfig,
   getProxyUrlFromExtraConfig,
@@ -11,6 +14,7 @@ import {
   getSub2ApiSubscriptionFromExtraConfig,
   guessPlatformUserIdFromUsername,
   mergeAccountExtraConfig,
+  mergeManagedBrowserProfileExtraConfig,
   normalizeCredentialMode,
   resolvePlatformUserId,
   requiresManagedAccountTokens,
@@ -34,6 +38,76 @@ describe('accountExtraConfig', () => {
 
   it('prefers configured user id over guessed user id', () => {
     expect(resolvePlatformUserId(JSON.stringify({ platformUserId: 5001 }), 'linuxdo_7659')).toBe(5001);
+  });
+
+  it('prefers the stored managed browser login provider', () => {
+    const extraConfig = JSON.stringify({
+      managedBrowserProfile: { loginProvider: 'github' },
+    });
+
+    expect(getManagedBrowserLoginProvider(extraConfig, 'linuxdo_59260')).toBe('github');
+  });
+
+  it('only infers historical LinuxDO or GitHub providers from strict usernames', () => {
+    expect(guessManagedBrowserLoginProviderFromUsername('linuxdo_59260')).toBe('linuxdo');
+    expect(guessManagedBrowserLoginProviderFromUsername('github_166081')).toBe('github');
+    expect(guessManagedBrowserLoginProviderFromUsername('user_59260')).toBeUndefined();
+    expect(guessManagedBrowserLoginProviderFromUsername('linuxdo_user')).toBeUndefined();
+  });
+
+  it('merges managed browser profile metadata without dropping existing fields', () => {
+    const merged = mergeManagedBrowserProfileExtraConfig(JSON.stringify({
+      credentialMode: 'session',
+      managedBrowserProfile: {
+        enabled: true,
+        provider: 'agentrouter',
+        profileDir: '/profiles/94',
+        wafCookieNames: ['acw_tc'],
+      },
+    }), {
+      loginProvider: 'linuxdo',
+      lastVerifiedAt: '2026-07-13T08:00:00.000Z',
+    });
+
+    expect(JSON.parse(merged)).toEqual({
+      credentialMode: 'session',
+      managedBrowserProfile: {
+        enabled: true,
+        provider: 'agentrouter',
+        profileDir: '/profiles/94',
+        wafCookieNames: ['acw_tc'],
+        loginProvider: 'linuxdo',
+        lastVerifiedAt: '2026-07-13T08:00:00.000Z',
+      },
+    });
+  });
+
+  it('deep-merges managed browser profile metadata through the generic config merger', () => {
+    const merged = mergeAccountExtraConfig(JSON.stringify({
+      managedBrowserProfile: {
+        enabled: true,
+        provider: 'agentrouter',
+        profileDir: '/profiles/94',
+        loginProvider: 'linuxdo',
+        proxyUrl: 'http://profile-proxy:7890',
+      },
+    }), {
+      managedBrowserProfile: {
+        profileDir: '/profiles/94-refreshed',
+        lastVerifiedAt: '2026-08-01T05:00:00.000Z',
+      },
+    });
+
+    expect(JSON.parse(merged)).toMatchObject({
+      managedBrowserProfile: {
+        enabled: true,
+        provider: 'agentrouter',
+        profileDir: '/profiles/94-refreshed',
+        loginProvider: 'linuxdo',
+        proxyUrl: 'http://profile-proxy:7890',
+        lastVerifiedAt: '2026-08-01T05:00:00.000Z',
+      },
+    });
   });
 
   it('merges platformUserId into existing config without dropping keys', () => {
@@ -97,6 +171,16 @@ describe('accountExtraConfig', () => {
     expect(getSub2ApiAuthFromExtraConfig(JSON.stringify({
       sub2apiAuth: { refreshToken: '  ' },
     }))).toBeNull();
+  });
+
+  it('reads the dedicated AgentRouter balance proxy without changing the browser proxy', () => {
+    const extraConfig = JSON.stringify({
+      proxyUrl: 'http://browser-proxy:7890',
+      agentRouterBalanceProxyUrl: 'http://balance-proxy:7890',
+    });
+
+    expect(getAgentRouterBalanceProxyUrlFromExtraConfig(extraConfig)).toBe('http://balance-proxy:7890');
+    expect(getProxyUrlFromExtraConfig(extraConfig)).toBe('http://browser-proxy:7890');
   });
 
   it('reads proxyUrl from extra config', () => {

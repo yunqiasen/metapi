@@ -27,10 +27,19 @@ const VALID_CREDENTIAL_MODES = new Set<AccountCredentialMode>([
   'apikey',
 ]);
 
+type ManagedBrowserProfileExtraConfig = {
+  loginProvider?: unknown;
+  [key: string]: unknown;
+};
+
+export type ManagedBrowserLoginProvider = 'linuxdo' | 'github';
+
 type AccountExtraConfig = {
   platformUserId?: unknown;
   credentialMode?: unknown;
   useSystemProxy?: unknown;
+  agentRouterBalanceProxyUrl?: unknown;
+  agentRouterBrowserProxyUrl?: unknown;
   oauth?: {
     provider?: unknown;
     [key: string]: unknown;
@@ -38,6 +47,7 @@ type AccountExtraConfig = {
   autoRelogin?: AutoReloginConfig;
   sub2apiAuth?: Sub2ApiAuthConfig;
   sub2apiSubscription?: Sub2ApiSubscriptionConfig;
+  managedBrowserProfile?: ManagedBrowserProfileExtraConfig;
   [key: string]: unknown;
 };
 
@@ -136,6 +146,16 @@ export function normalizeCredentialMode(raw: unknown): AccountCredentialMode | u
 export function getProxyUrlFromExtraConfig(extraConfig?: ExtraConfigInput): string | null {
   const parsed = parseExtraConfig(extraConfig);
   return normalizeNonEmptyString(parsed.proxyUrl) ?? null;
+}
+
+export function getAgentRouterBalanceProxyUrlFromExtraConfig(extraConfig?: ExtraConfigInput): string | null {
+  const parsed = parseExtraConfig(extraConfig);
+  return normalizeNonEmptyString(parsed.agentRouterBalanceProxyUrl) ?? null;
+}
+
+export function getAgentRouterBrowserProxyUrlFromExtraConfig(extraConfig?: ExtraConfigInput): string | null {
+  const parsed = parseExtraConfig(extraConfig);
+  return normalizeNonEmptyString(parsed.agentRouterBrowserProxyUrl) ?? null;
 }
 
 export function getUseSystemProxyFromExtraConfig(extraConfig?: ExtraConfigInput): boolean {
@@ -345,14 +365,55 @@ export function resolvePlatformUserId(extraConfig?: ExtraConfigInput, username?:
   return getPlatformUserIdFromExtraConfig(extraConfig) || guessPlatformUserIdFromUsername(username);
 }
 
+export function guessManagedBrowserLoginProviderFromUsername(
+  username?: string | null,
+): ManagedBrowserLoginProvider | undefined {
+  const match = (username || '').trim().toLowerCase().match(/^(linuxdo|github)_\d+$/);
+  return match?.[1] as ManagedBrowserLoginProvider | undefined;
+}
+
+export function getManagedBrowserLoginProvider(
+  extraConfig?: ExtraConfigInput,
+  username?: string | null,
+): ManagedBrowserLoginProvider | undefined {
+  const parsed = parseExtraConfig(extraConfig);
+  const raw = normalizeNonEmptyString(parsed.managedBrowserProfile?.loginProvider)?.toLowerCase();
+  if (raw === 'linuxdo' || raw === 'github') return raw;
+  return guessManagedBrowserLoginProviderFromUsername(username);
+}
+
+export function mergeManagedBrowserProfileExtraConfig(
+  extraConfig: ExtraConfigInput,
+  patch: Record<string, unknown>,
+): string {
+  const parsed = parseExtraConfig(extraConfig);
+  const existingProfile = isRecord(parsed.managedBrowserProfile)
+    ? parsed.managedBrowserProfile
+    : {};
+  return JSON.stringify({
+    ...parsed,
+    managedBrowserProfile: {
+      ...existingProfile,
+      ...patch,
+    },
+  });
+}
+
 export function mergeAccountExtraConfig(
   extraConfig: ExtraConfigInput,
   patch: Record<string, unknown>,
 ): string {
+  const parsed = parseExtraConfig(extraConfig);
   const merged: Record<string, unknown> = {
-    ...parseExtraConfig(extraConfig),
+    ...parsed,
     ...patch,
   };
+  if (isRecord(patch.managedBrowserProfile)) {
+    merged.managedBrowserProfile = {
+      ...(isRecord(parsed.managedBrowserProfile) ? parsed.managedBrowserProfile : {}),
+      ...patch.managedBrowserProfile,
+    };
+  }
   return JSON.stringify(merged);
 }
 

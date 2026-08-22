@@ -16,13 +16,81 @@ import { decryptAccountPassword } from './accountCredentialService.js';
 import { extractRuntimeHealth, setAccountRuntimeHealth } from './accountHealthService.js';
 import { updateTodayIncomeSnapshot } from './todayIncomeRewardService.js';
 import type { BalanceInfo } from './platforms/base.js';
-import { withAccountProxyOverride, withSiteProxyRequestInit, withSiteRecordProxyRequestInit } from './siteProxy.js';
+import { withAccountProxyOverride, withSiteProxyRequestInit, withSiteRecordProxyRequestInit, withSiteRequestTimeout } from './siteProxy.js';
 import {
   isManagedSub2ApiTokenDue,
   isSub2ApiPlatform,
 } from './sub2apiManagedAuth.js';
 import { refreshSub2ApiManagedSessionSingleflight } from './sub2apiRefreshSingleflight.js';
 import { refreshManagedAccountLogin } from './accountManagedBrowserLogin.js';
+import { readAgentRouterBalanceFromProfile } from './agentRouterReloginBrowser.js';
+import { readAnyRouterBalanceFromProfile } from './anyRouterBrowserVisitCheckinBrowser.js';
+import { readAgentRouterBalanceWithProxyFallback, resolveAgentRouterBalanceProxyCandidates } from './agentRouterBalanceRequest.js';
+import { withAccountBrowserProfileLease } from './accountBrowserProfileLease.js';
+import { formatLocalDate, formatUtcSqlDateTime, toLocalDayKeyFromStoredUtc } from './localTimeService.js';
+
+export type BalanceRefreshResult = BalanceInfo & {
+  observedCheckinReward?: string;
+  observedCheckinMessage?: string;
+};
+
+type ObservedAgentRouterCheckin = {
+  reward: string;
+  message: string;
+};
+
+function formatAmount(value: number): string {
+  return Number.isInteger(value) ? String(Math.trunc(value)) : String(value);
+}
+
+function positiveQuotaDelta(previous: unknown, latest: unknown): number {
+  const before = typeof previous === 'number' && Number.isFinite(previous) ? previous : null;
+  const after = typeof latest === 'number' && Number.isFinite(latest) ? latest : null;
+  if (before == null || before <= 0 || after == null || after <= before) return 0;
+  return Math.round((after - before) * 1_000_000) / 1_000_000;
+}
+
+async function recordObservedAgentRouterCheckin(
+  account: typeof schema.accounts.$inferSelect,
+  site: typeof schema.sites.$inferSelect,
+  balanceInfo: BalanceInfo,
+  now = new Date(),
+): Promise<ObservedAgentRouterCheckin | null> {
+  if (String(site.platform || '').trim().toLowerCase() !== 'agentrouter') return null;
+  if (account.checkinEnabled === false) return null;
+  if (toLocalDayKeyFromStoredUtc(account.lastCheckinAt) === formatLocalDate(now)) return null;
+
+  const delta = positiveQuotaDelta(account.quota, balanceInfo.quota);
+  if (delta <= 0) return null;
+
+  const reward = `总额度 +${formatAmount(delta)}`;
+  const message = `AgentRouter 签到成功：${reward}，当前总额度 ${formatAmount(balanceInfo.quota)}`;
+  const nowIso = now.toISOString();
+  const createdAt = formatUtcSqlDateTime(now);
+
+  await db.update(schema.accounts)
+    .set({ lastCheckinAt: nowIso, updatedAt: nowIso })
+    .where(eq(schema.accounts.id, account.id))
+    .run();
+  await db.insert(schema.checkinLogs).values({
+    accountId: account.id,
+    status: 'success',
+    message,
+    reward,
+    createdAt,
+  }).run();
+  await db.insert(schema.events).values({
+    type: 'checkin',
+    title: 'checkin success',
+    message: `${account.username || `ID:${account.id}`} @ ${site.name}: ${message}`,
+    level: 'info',
+    relatedId: account.id,
+    relatedType: 'account',
+    createdAt,
+  }).run();
+
+  return { reward, message };
+}
 
 function isSiteDisabled(status?: string | null): boolean {
   return (status || 'active') === 'disabled';
@@ -69,6 +137,31 @@ function isUnsupportedCheckinRuntimeHealth(health: ReturnType<typeof extractRunt
 const INCOME_LOG_TYPES = [1, 4] as const;
 const LOG_PAGE_SIZE = 100;
 const LOG_MAX_PAGES = 6;
+
+const DEFAULT_BALANCE_REQUEST_TIMEOUT_MS = 10_000;
+
+function resolveBalanceRequestTimeoutMs(): number {
+  const configured = Number.parseInt(String(process.env.METAPI_BALANCE_REQUEST_TIMEOUT_MS || '').trim(), 10);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(1, configured)
+    : DEFAULT_BALANCE_REQUEST_TIMEOUT_MS;
+}
+
+async function runBalanceRequest<T>(request: () => Promise<T>): Promise<T> {
+  const timeoutMs = resolveBalanceRequestTimeoutMs();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => withSiteRequestTimeout(timeoutMs, request)),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('balance_request_timeout')), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function supportsTodayIncomeLogFallback(platform?: string | null): boolean {
   const normalized = (platform || '').toLowerCase();
@@ -256,7 +349,7 @@ async function tryAutoRelogin(account: any, site: any): Promise<AutoReloginResul
   return { accessToken: loginResult.accessToken };
 }
 
-export async function refreshBalance(accountId: number) {
+async function refreshBalanceUnlocked(accountId: number) {
   const rows = await db
     .select()
     .from(schema.accounts)
@@ -270,7 +363,7 @@ export async function refreshBalance(accountId: number) {
   const site = rows[0].sites;
 
   if (isSiteDisabled(site.status)) {
-    setAccountRuntimeHealth(account.id, {
+    await setAccountRuntimeHealth(account.id, {
       state: 'disabled',
       reason: '站点已禁用',
       source: 'balance',
@@ -319,11 +412,13 @@ export async function refreshBalance(accountId: number) {
       } catch {}
     }
   }
-  const readBalance = async (token: string) => withAccountProxyOverride(accountProxyUrl,
-    () => adapter.getBalance(site.url, token, platformUserId));
+  const readBalance = async (token: string) => runBalanceRequest(() => withAccountProxyOverride(
+    accountProxyUrl,
+    () => adapter.getBalance(site.url, token, platformUserId),
+  ));
   const handleBalanceError = async (err: any) => {
     const message = appendSessionTokenRebindHint(err?.message || 'unknown error');
-    setAccountRuntimeHealth(account.id, {
+    await setAccountRuntimeHealth(account.id, {
       state: 'unhealthy',
       reason: message,
       source: 'balance',
@@ -348,7 +443,34 @@ export async function refreshBalance(accountId: number) {
       && !!getSub2ApiAuthFromExtraConfig(activeExtraConfig)?.refreshToken
       && shouldAttemptAutoRelogin(message);
 
-    if (canTryManagedSub2ApiRefresh) {
+    const platform = String(site.platform || '').trim().toLowerCase();
+    const canUseManagedBrowserFallback = adapter.balanceFallbackMode === 'managed-browser-profile';
+
+    if (canUseManagedBrowserFallback && platform === 'agentrouter') {
+      const attemptedProxyKey = accountProxyUrl?.trim() || '__direct__';
+      const remainingCandidates = resolveAgentRouterBalanceProxyCandidates(account.extraConfig)
+        .filter((proxyUrl) => (proxyUrl?.trim() || '__direct__') !== attemptedProxyKey);
+      balanceInfo = await readAgentRouterBalanceWithProxyFallback(
+        remainingCandidates,
+        (proxyUrl) => withAccountProxyOverride(
+          proxyUrl,
+          () => adapter.getBalance(site.url, activeAccessToken, platformUserId),
+        ),
+      );
+      if (!balanceInfo) {
+        try {
+          balanceInfo = await readAgentRouterBalanceFromProfile(account, site);
+        } catch (browserError: any) {
+          await handleBalanceError(browserError);
+        }
+      }
+    } else if (canUseManagedBrowserFallback && platform === 'anyrouter') {
+      try {
+        balanceInfo = await readAnyRouterBalanceFromProfile(account, site);
+      } catch (browserError: any) {
+        await handleBalanceError(browserError);
+      }
+    } else if (canTryManagedSub2ApiRefresh) {
       try {
         const refreshed = await refreshSub2ApiManagedSessionSingleflight({
           account,
@@ -390,12 +512,15 @@ export async function refreshBalance(accountId: number) {
     supportsTodayIncomeLogFallback(site.platform)
   ) {
     try {
-      const fallbackIncome = await withAccountProxyOverride(accountProxyUrl, () => fetchTodayIncomeFromLogs({
-        baseUrl: site.url,
-        accessToken: activeAccessToken,
-        platform: site.platform,
-        platformUserId,
-      }));
+      const fallbackIncome = await runBalanceRequest(() => withAccountProxyOverride(
+        accountProxyUrl,
+        () => fetchTodayIncomeFromLogs({
+          baseUrl: site.url,
+          accessToken: activeAccessToken,
+          platform: site.platform,
+          platformUserId,
+        }),
+      ));
       if (typeof fallbackIncome === 'number' && Number.isFinite(fallbackIncome)) {
         balanceInfo.todayIncome = fallbackIncome;
       }
@@ -432,7 +557,9 @@ export async function refreshBalance(accountId: number) {
     .where(eq(schema.accounts.id, accountId))
     .run();
 
-  setAccountRuntimeHealth(account.id, {
+  const observedCheckin = await recordObservedAgentRouterCheckin(account, site, balanceInfo);
+
+  await setAccountRuntimeHealth(account.id, {
     state: keepUnsupportedCheckinDegraded ? 'degraded' : 'healthy',
     reason: keepUnsupportedCheckinDegraded
       ? (existingRuntimeHealth?.reason || '\u7ad9\u70b9\u4e0d\u652f\u6301\u7b7e\u5230\u63a5\u53e3')
@@ -442,7 +569,17 @@ export async function refreshBalance(accountId: number) {
       : 'balance',
   });
 
-  return balanceInfo;
+  return observedCheckin
+    ? {
+        ...balanceInfo,
+        observedCheckinReward: observedCheckin.reward,
+        observedCheckinMessage: observedCheckin.message,
+      }
+    : balanceInfo;
+}
+
+export function refreshBalance(accountId: number): Promise<BalanceRefreshResult | null> {
+  return withAccountBrowserProfileLease(accountId, () => refreshBalanceUnlocked(accountId));
 }
 
 export async function refreshAllBalances() {

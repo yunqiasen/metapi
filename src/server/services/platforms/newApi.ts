@@ -564,6 +564,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
       ? (err as { message: string }).message.trim()
       : '';
     if (!raw) return null;
+    if (this.isHtmlJsonParseErrorMessage(raw)) return 'upstream_html_response';
 
     const httpMatch = raw.match(/^(HTTP\s+\d+):\s*([\s\S]+)$/);
     if (!httpMatch) return raw;
@@ -594,7 +595,8 @@ export class NewApiAdapter extends BasePlatformAdapter {
     if (!message) return false;
     const text = message.toLowerCase();
     return (
-      text.includes("unexpected token '<'")
+      text.includes('upstream_html_response')
+      || text.includes("unexpected token '<'")
       || (text.includes('not valid json') && (text.includes('<html') || text.includes('<script')))
     );
   }

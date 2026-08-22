@@ -39,12 +39,14 @@ import {
   parseSiteProxyUrlInput,
   withAccountProxyOverride,
   withSiteRecordProxyRequestInit,
+  withSiteRequestTimeout,
 } from "../../services/siteProxy.js";
 import { createRateLimitGuard } from "../../middleware/requestRateLimit.js";
 import { getAccountsSnapshot } from "../../services/accountsOverviewService.js";
 import {
   type AccountCreatePayload,
   parseAccountBatchPayload,
+  parseAccountBrowserProfileRebindPayload,
   parseAccountCreatePayload,
   parseAccountHealthRefreshPayload,
   parseAccountSiteAuthBrowserLoginStartPayload,
@@ -64,7 +66,17 @@ import {
   parseBatchApiKeys,
 } from "../../services/apiKeyBatch.js";
 import { createManualAccount } from "../../services/manualAccountCreationService.js";
-import { isManagedBrowserLoginSite, resolveAccountBrowserProfileDir } from "../../services/accountManagedBrowserLogin.js";
+import {
+  discardAgentRouterSessionVerificationProfile,
+  verifyAgentRouterSessionInBrowser,
+} from "../../services/agentRouterSessionBrowserVerification.js";
+import { cleanupOrphanedBrowserProfiles } from "../../services/browserProfileCleanupService.js";
+import { AccountBrowserProfileRebindError, rebindAccountFromTargetBrowserProfile } from "../../services/accountBrowserProfileRebindService.js";
+import {
+  canUseManagedBrowserPasswordLogin,
+  isManagedBrowserLoginSite,
+  resolveAccountBrowserProfileDir,
+} from "../../services/accountManagedBrowserLogin.js";
 import {
   getSiteAuthCredential,
   getSiteAuthCredentialPayload,
@@ -72,6 +84,7 @@ import {
 import { resolveSiteAuthLogin, startSiteAuthBrowserLogin, toSafeSiteAuthBridgeError } from "../../services/site-auth/loginBridge.js";
 import {
   captureTargetSiteBrowserScreenshot,
+  confirmTargetSiteBrowserCaptcha,
   closeTargetSiteBrowserSession,
   getTargetSiteBrowserSession,
   markTargetSiteBrowserSessionSaved,
@@ -160,13 +173,16 @@ function resolveRequestOrigin(request: { headers: Record<string, unknown>; proto
   const protocol = request.protocol || "http";
   return host ? protocol + "://" + host : "";
 }
-function resolveSiteLoginUrl(site: { url?: string | null }): string {
+function resolveSiteLoginUrl(site: { url?: string | null; platform?: string | null }): string {
   const baseUrl = String(site.url || "").trim().replace(/\/+$/, "");
   if (!baseUrl) throw new Error("target site URL is required");
+  const path = String(site.platform || "").trim().toLowerCase() === "agentrouter"
+    ? "/register"
+    : "/login";
   try {
-    return new URL("/login", `${baseUrl}/`).toString();
+    return new URL(path, `${baseUrl}/`).toString();
   } catch {
-    return `${baseUrl}/login`;
+    return `${baseUrl}${path}`;
   }
 }
 
@@ -344,15 +360,6 @@ async function createTargetBrowserSessionAccountWithoutVerification({
     source: "target-site-browser-login",
     ...(provider ? { sourceProvider: provider } : {}),
     ...(credentialId ? { providerCredentialId: credentialId } : {}),
-    ...(site && isManagedBrowserLoginSite(site) ? {
-      managedBrowserProfile: {
-        enabled: true,
-        provider: String(site.platform || '').toLowerCase(),
-        profileDir: resolveAccountBrowserProfileDir({ id: 0 }, site).replace(/0$/, '<accountId>'),
-        createdFrom: 'target-site-browser-login',
-        updatedAt: new Date().toISOString(),
-      },
-    } : {}),
     verification: "pending",
   });
   const inserted = await insertAndGetById<typeof schema.accounts.$inferSelect>({
@@ -419,6 +426,8 @@ type LoginFailureInfo = {
 const ACCOUNT_HEALTH_REFRESH_TIMEOUT_MS = 10_000;
 const ACCOUNT_VERIFY_TIMEOUT_MS = 10_000;
 const ACCOUNT_VERIFY_DIAG_TIMEOUT_MS = 2_500;
+const DEFAULT_ACCOUNT_LOGIN_REQUEST_TIMEOUT_MS = 12_000;
+const DEFAULT_ACCOUNT_LOGIN_TOKEN_TIMEOUT_MS = 8_000;
 
 function normalizeLoginFailure(
   message: string | null | undefined,
@@ -480,6 +489,26 @@ async function withTimeout<T>(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+
+function resolvePositiveTimeoutEnv(name: string, fallbackMs: number): number {
+  const configured = Number.parseInt(String(process.env[name] || '').trim(), 10);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(1, configured)
+    : fallbackMs;
+}
+
+async function runBoundedSiteRequest<T>(
+  fn: () => Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
+  return withTimeout(
+    () => withSiteRequestTimeout(timeoutMs, fn),
+    timeoutMs,
+    timeoutMessage,
+  );
 }
 
 function isVerificationTimeoutError(error: unknown): boolean {
@@ -570,7 +599,7 @@ async function refreshRuntimeHealthForRow(
     (row.accounts.status || "active") === "disabled" ||
     (row.sites.status || "active") === "disabled"
   ) {
-    setAccountRuntimeHealth(accountId, {
+    await setAccountRuntimeHealth(accountId, {
       state: "disabled",
       reason: "账号或站点已禁用",
       source: "health-refresh",
@@ -624,7 +653,7 @@ async function refreshRuntimeHealthForRow(
     };
   } catch (error: any) {
     const message = String(error?.message || "健康检查失败");
-    setAccountRuntimeHealth(accountId, {
+    await setAccountRuntimeHealth(accountId, {
       state: "unhealthy",
       reason: message,
       source: "health-refresh",
@@ -706,8 +735,36 @@ export async function accountsRoutes(app: FastifyInstance) {
       if (!adapter)
         return { success: false, message: `不支持的平台: ${site.platform}` };
 
-      // Login to the target site
-      const loginResult = await adapter.login(site.url, username, password);
+      const existing = await db
+        .select()
+        .from(schema.accounts)
+        .where(
+          and(
+            eq(schema.accounts.siteId, siteId),
+            eq(schema.accounts.username, username),
+          ),
+        )
+        .get();
+
+      // Password accounts use the platform protocol directly. Browser Profiles are created only
+      // by explicit target-site browser/OAuth flows, never as a hidden password-login fallback.
+      const loginTimeoutMs = resolvePositiveTimeoutEnv(
+        "METAPI_ACCOUNT_LOGIN_REQUEST_TIMEOUT_MS",
+        DEFAULT_ACCOUNT_LOGIN_REQUEST_TIMEOUT_MS,
+      );
+      let loginResult: Awaited<ReturnType<typeof adapter.login>>;
+      try {
+        loginResult = await runBoundedSiteRequest(
+          () => adapter.login(site.url, username, password),
+          loginTimeoutMs,
+          "account login request timed out",
+        );
+      } catch (error) {
+        loginResult = {
+          success: false,
+          message: error instanceof Error ? error.message : "account login request failed",
+        };
+      }
       if (!loginResult.success || !loginResult.accessToken) {
         const normalizedFailure = normalizeLoginFailure(loginResult.message);
         return {
@@ -719,42 +776,44 @@ export async function accountsRoutes(app: FastifyInstance) {
 
       const guessedPlatformUserId = guessPlatformUserIdFromUsername(username);
 
-      // Auto-fetch API token(s)
+      // API-token discovery is optional. A slow token endpoint must not block account creation.
       let apiToken: string | null = null;
       let apiTokens: Array<{
         name?: string | null;
         key?: string | null;
         enabled?: boolean | null;
       }> = [];
-      try {
-        apiToken = await adapter.getApiToken(
+      const tokenTimeoutMs = resolvePositiveTimeoutEnv(
+        "METAPI_ACCOUNT_LOGIN_TOKEN_TIMEOUT_MS",
+        DEFAULT_ACCOUNT_LOGIN_TOKEN_TIMEOUT_MS,
+      );
+      const tokenDeadline = Date.now() + tokenTimeoutMs;
+      const runOptionalTokenRequest = async <T>(fn: () => Promise<T>): Promise<T | null> => {
+        const remainingMs = tokenDeadline - Date.now();
+        if (remainingMs <= 0) return null;
+        try {
+          return await runBoundedSiteRequest(fn, remainingMs, "account API token discovery timed out");
+        } catch {
+          return null;
+        }
+      };
+      apiTokens = await runOptionalTokenRequest(() => adapter.getApiTokens(
+        site.url,
+        loginResult.accessToken!,
+        guessedPlatformUserId,
+      )) || [];
+      if (apiTokens.length === 0) {
+        apiToken = await runOptionalTokenRequest(() => adapter.getApiToken(
           site.url,
-          loginResult.accessToken,
+          loginResult.accessToken!,
           guessedPlatformUserId,
-        );
-      } catch {}
-      try {
-        apiTokens = await adapter.getApiTokens(
-          site.url,
-          loginResult.accessToken,
-          guessedPlatformUserId,
-        );
-      } catch {}
+        ));
+      }
 
       const preferredApiToken =
         apiTokens.find((token) => token.enabled !== false && token.key)?.key ||
         apiToken ||
         null;
-      const existing = await db
-        .select()
-        .from(schema.accounts)
-        .where(
-          and(
-            eq(schema.accounts.siteId, siteId),
-            eq(schema.accounts.username, username),
-          ),
-        )
-        .get();
 
       const extraConfigPatch: Record<string, unknown> = {
         credentialMode: "session",
@@ -767,15 +826,6 @@ export async function accountsRoutes(app: FastifyInstance) {
       if (guessedPlatformUserId) {
         extraConfigPatch.platformUserId = guessedPlatformUserId;
       }
-      if (isManagedBrowserLoginSite(site)) {
-        extraConfigPatch.managedBrowserProfile = {
-          enabled: true,
-          provider: String(site.platform || '').toLowerCase(),
-          profileDir: resolveAccountBrowserProfileDir({ id: existing?.id || 0 }, site).replace(/0$/, existing?.id ? String(existing.id) : '<accountId>'),
-          createdFrom: 'account-password-login',
-          updatedAt: new Date().toISOString(),
-        };
-      }
       const extraConfig = mergeAccountExtraConfig(
         existing?.extraConfig,
         extraConfigPatch,
@@ -787,7 +837,7 @@ export async function accountsRoutes(app: FastifyInstance) {
         await db
           .update(schema.accounts)
           .set({
-            accessToken: loginResult.accessToken,
+            accessToken: loginResult.accessToken!,
             apiToken: preferredApiToken || undefined,
             checkinEnabled: true,
             status: "active",
@@ -805,7 +855,7 @@ export async function accountsRoutes(app: FastifyInstance) {
           values: {
             siteId,
             username,
-            accessToken: loginResult.accessToken,
+            accessToken: loginResult.accessToken!,
             apiToken: preferredApiToken || undefined,
             checkinEnabled: true,
             extraConfig,
@@ -818,7 +868,7 @@ export async function accountsRoutes(app: FastifyInstance) {
         accountId = created.id;
       }
 
-      const result = await db
+      let result = await db
         .select()
         .from(schema.accounts)
         .where(eq(schema.accounts.id, accountId!))
@@ -827,16 +877,28 @@ export async function accountsRoutes(app: FastifyInstance) {
         return { success: false, message: "account create failed" };
       }
 
-      await convergeAccountMutation({
-        accountId: result.id,
-        preferredApiToken,
-        defaultTokenSource: "sync",
-        upstreamTokens: apiTokens,
-        refreshBalance: true,
-        refreshModels: true,
-        rebuildRoutes: true,
-        continueOnError: true,
-      });
+
+      const initTitle = `初始化连接 #${result.id}`;
+      const { task: initTask, reused: reusedInitTask } = startBackgroundTask(
+        {
+          type: "account-init",
+          title: initTitle,
+          dedupeKey: `account-init-${result.id}`,
+          notifyOnFailure: true,
+          successMessage: () => `${initTitle}已完成`,
+          failureMessage: (currentTask) => `${initTitle}失败：${currentTask.error || "unknown error"}`,
+        },
+        () => convergeAccountMutation({
+          accountId: result.id,
+          preferredApiToken,
+          defaultTokenSource: "sync",
+          upstreamTokens: apiTokens,
+          refreshBalance: true,
+          refreshModels: true,
+          rebuildRoutes: true,
+          continueOnError: true,
+        }),
+      );
 
       const account = await db
         .select()
@@ -849,6 +911,10 @@ export async function accountsRoutes(app: FastifyInstance) {
         apiTokenFound: !!preferredApiToken,
         tokenCount: apiTokens.length,
         reusedAccount: !!existing,
+        queued: true,
+        jobId: initTask.id,
+        status: initTask.status,
+        message: reusedInitTask ? "连接已保存，初始化任务执行中" : "连接已保存，后台正在同步余额、模型和路由",
       };
     },
   );
@@ -1094,6 +1160,37 @@ export async function accountsRoutes(app: FastifyInstance) {
         }
       }
 
+      const verifyAgentRouterSessionWithBrowser = async () => {
+        if (String(site.platform || '').trim().toLowerCase() !== 'agentrouter') return null;
+        let browserVerified: Awaited<ReturnType<typeof verifyAgentRouterSessionInBrowser>> | null = null;
+        try {
+          browserVerified = await verifyAgentRouterSessionInBrowser({
+            site,
+            accessToken,
+            platformUserId: parsedPlatformUserId,
+          });
+          return {
+            success: true,
+            tokenType: 'session' as const,
+            userInfo: {
+              ...(browserVerified.username ? { username: browserVerified.username } : {}),
+              platformUserId: browserVerified.platformUserId,
+            },
+            balance: browserVerified.balance,
+            browserVerified: true,
+          };
+        } catch (browserError) {
+          const browserMessage = browserError instanceof Error ? browserError.message : '';
+          return browserMessage
+            ? { success: false, message: appendSessionTokenRebindHint(browserMessage) }
+            : null;
+        } finally {
+          if (browserVerified) {
+            await discardAgentRouterSessionVerificationProfile(browserVerified.profileDir);
+          }
+        }
+      };
+
       let result: any;
       try {
         result = await withTimeout(
@@ -1104,6 +1201,8 @@ export async function accountsRoutes(app: FastifyInstance) {
         );
       } catch (err: any) {
         if (isVerificationTimeoutError(err)) {
+          const browserResult = await verifyAgentRouterSessionWithBrowser();
+          if (browserResult) return browserResult;
           const failure = buildVerificationFailureResponse(
             await diagnoseVerificationFailure(),
           );
@@ -1142,6 +1241,9 @@ export async function accountsRoutes(app: FastifyInstance) {
           models: result.models?.slice(0, 10),
         };
       }
+
+      const browserResult = await verifyAgentRouterSessionWithBrowser();
+      if (browserResult) return browserResult;
 
       // Try to explain unknown failures: missing user id vs anti-bot challenge page.
       const detectVerifyFailureReason =
@@ -1452,6 +1554,33 @@ export async function accountsRoutes(app: FastifyInstance) {
     },
   );
 
+  app.post<{ Params: { id: string }; Body: unknown }>(
+    "/api/accounts/:id/rebind-browser-profile",
+    async (request, reply) => {
+      const accountId = Number.parseInt(request.params.id, 10);
+      if (!Number.isFinite(accountId) || accountId <= 0) {
+        return reply.code(400).send({ success: false, message: "账号 ID 无效" });
+      }
+      const parsed = parseAccountBrowserProfileRebindPayload(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ success: false, message: parsed.error });
+      }
+      try {
+        const account = await rebindAccountFromTargetBrowserProfile({
+          accountId,
+          state: parsed.data.state,
+        });
+        return { success: true, account };
+      } catch (error) {
+        const statusCode = error instanceof AccountBrowserProfileRebindError
+          ? error.statusCode
+          : 400;
+        const message = error instanceof Error ? error.message : "浏览器 Profile 重新绑定失败";
+        return reply.code(statusCode).send({ success: false, message });
+      }
+    },
+  );
+
   app.get<{ Params: { state: string } }>("/site-auth/target-browser/:state", async (request, reply) => {
     const state = String(request.params.state || "").trim();
     if (!state || !getTargetSiteBrowserSession(state)) {
@@ -1475,6 +1604,15 @@ export async function accountsRoutes(app: FastifyInstance) {
       return reply.header("Cache-Control", "no-store").type("image/png").send(buffer);
     } catch (error: any) {
       return reply.code(404).send({ success: false, message: error?.message || "target site auth browser screenshot failed" });
+    }
+  });
+
+  app.post<{ Params: { state: string } }>("/api/accounts/site-auth-browser-sessions/:state/confirm-captcha", async (request, reply) => {
+    try {
+      const result = await confirmTargetSiteBrowserCaptcha(String(request.params.state || "").trim());
+      return { success: result.clicked, ...result };
+    } catch (error: any) {
+      return reply.code(404).send({ success: false, clicked: false, reason: "error", message: error?.message || "target site captcha confirmation failed" });
     }
   });
 
@@ -1531,6 +1669,7 @@ export async function accountsRoutes(app: FastifyInstance) {
         session: extracted,
         state,
         siteId: session.siteId,
+        accountId: session.accountId,
         provider: session.provider,
         credentialId: session.credentialId,
         targetSiteUrl: session.targetSiteUrl,
@@ -1573,6 +1712,8 @@ export async function accountsRoutes(app: FastifyInstance) {
           adapter,
           credentialMode: "session",
           rawAccessToken: saved.accessToken,
+          prepareAccountForInitialization: (account) =>
+            persistTargetBrowserSessionProfileForAccount({ state, account, site }),
         });
       } catch (error) {
         if (!isTargetBrowserSessionVerificationFailure(error)) throw error;
@@ -1585,10 +1726,12 @@ export async function accountsRoutes(app: FastifyInstance) {
         });
         verificationPending = true;
       }
-      const completedSession = await markTargetSiteBrowserSessionSaved(state);
       let account = created?.account || fallbackAccount;
       if (!account) throw new Error("创建账号失败");
-      account = await persistTargetBrowserSessionProfileForAccount({ state, account, site });
+      if (!created) {
+        account = await persistTargetBrowserSessionProfileForAccount({ state, account, site });
+      }
+      const completedSession = await markTargetSiteBrowserSessionSaved(state);
       return {
         success: true,
         session: { ...saved, ...completedSession },
@@ -1647,11 +1790,21 @@ export async function accountsRoutes(app: FastifyInstance) {
         });
     }
 
-    const managedBrowserLoginSite = isManagedBrowserLoginSite(site);
+    const managedBrowserLoginSite = canUseManagedBrowserPasswordLogin(site);
     if (!body.credentialId && managedBrowserLoginSite) {
       try {
+        const rebindAccount = body.accountId
+          ? await db.select().from(schema.accounts).where(eq(schema.accounts.id, body.accountId)).get()
+          : null;
+        if (body.accountId && (!rebindAccount || rebindAccount.siteId !== site.id)) {
+          return reply.code(404).send({ success: false, message: "原连接不存在或站点不匹配" });
+        }
+        const sourceProfileDir = rebindAccount
+          ? resolveAccountBrowserProfileDir(rebindAccount, site)
+          : undefined;
         const controlled = await startTargetSiteBrowserSession({
           siteId: body.siteId,
+          ...(rebindAccount ? { accountId: rebindAccount.id, sourceProfileDir } : {}),
           credentialPayload: {},
           loginUrl: resolveSiteLoginUrl(site),
           targetSiteUrl: String(site.url || ""),
@@ -1661,12 +1814,13 @@ export async function accountsRoutes(app: FastifyInstance) {
         return {
           success: true,
           siteId: body.siteId,
+          ...(rebindAccount ? { accountId: rebindAccount.id } : {}),
           authorizationUrl: controlled.authorizationUrl,
           targetSiteUrl: controlled.targetSiteUrl,
           instructions: {
             mode: "target_site_browser_login",
             completionMode: "manual",
-            source: "managed_target_profile",
+            source: rebindAccount ? "managed_target_profile_rebind" : "managed_target_profile",
           },
         };
       } catch (error: any) {
@@ -1974,14 +2128,16 @@ export async function accountsRoutes(app: FastifyInstance) {
         adapter,
         credentialMode,
         rawAccessToken: requestedTokens[0]!,
+        ...(isTargetSiteBrowserSession ? {
+          prepareAccountForInitialization: (account: typeof schema.accounts.$inferSelect) =>
+            persistTargetBrowserSessionProfileForAccount({
+              state: targetSiteAuth?.state,
+              account,
+              site,
+            }),
+        } : {}),
       });
-      const account = isTargetSiteBrowserSession
-        ? await persistTargetBrowserSessionProfileForAccount({
-          state: targetSiteAuth?.state,
-          account: created.account,
-          site,
-        })
-        : created.account;
+      const account = created.account;
       return {
         ...account,
         tokenType: created.tokenType,
@@ -2209,23 +2365,48 @@ export async function accountsRoutes(app: FastifyInstance) {
     async (request) => {
       const id = parseInt(request.params.id);
       await db.delete(schema.accounts).where(eq(schema.accounts.id, id)).run();
+      await cleanupOrphanedBrowserProfiles();
       await rebuildRoutesBestEffort();
       return { success: true };
     },
   );
 
-  app.post("/api/accounts/credentials/refresh", async () => {
-    const result = await refreshAllAccountCredentials();
-    return {
-      success: true,
-      total: result.total,
-      results: result.results,
-      summary: {
-        success: result.success,
-        skipped: result.skipped,
-        failed: result.failed,
+  app.post("/api/accounts/credentials/refresh", async (_request, reply) => {
+    const { task, reused } = startBackgroundTask(
+      {
+        type: "account-credential-refresh",
+        title: "刷新全部账号凭证",
+        dedupeKey: "refresh-all-account-credentials",
+        notifyOnFailure: false,
+        successLevel: (currentTask) => {
+          const failed = Number((currentTask.result as { failed?: number } | null)?.failed || 0);
+          return failed > 0 ? "error" : "info";
+        },
+        successTitle: (currentTask) => {
+          const failed = Number((currentTask.result as { failed?: number } | null)?.failed || 0);
+          return failed > 0 ? "全部账号凭证刷新部分失败" : "全部账号凭证刷新已完成";
+        },
+        successMessage: (currentTask) => {
+          const result = currentTask.result as {
+            success?: number;
+            skipped?: number;
+            failed?: number;
+          } | null;
+          if (!result) return "全部账号凭证刷新已完成";
+          return `刷新凭证完成：成功 ${result.success || 0}，跳过 ${result.skipped || 0}，失败 ${result.failed || 0}`;
+        },
       },
-    };
+      () => refreshAllAccountCredentials(),
+    );
+
+    return reply.code(202).send({
+      success: true,
+      queued: true,
+      reused,
+      jobId: task.id,
+      status: task.status,
+      message: reused ? "全部账号凭证刷新任务执行中" : "全部账号凭证刷新任务已提交",
+    });
   });
 
   app.post<{ Params: { id: string } }>(
@@ -2236,11 +2417,36 @@ export async function accountsRoutes(app: FastifyInstance) {
         return reply.code(400).send({ success: false, message: "账号 ID 无效" });
       }
 
-      const result = await refreshAccountCredential(id);
-      if (result.status === "failed" && result.message === "账号不存在") {
-        return reply.code(404).send({ success: false, ...result });
-      }
-      return { success: true, ...result };
+      const { task, reused } = startBackgroundTask(
+        {
+          type: "account-credential-refresh",
+          title: `刷新账号凭证 #${id}`,
+          dedupeKey: `refresh-account-credential-${id}`,
+          notifyOnFailure: false,
+          successMessage: (currentTask) => {
+            const result = currentTask.result as { message?: string } | null;
+            return result?.message || `账号 #${id} 凭证刷新已完成`;
+          },
+          failureMessage: (currentTask) =>
+            `账号 #${id} 凭证刷新失败：${currentTask.error || "unknown error"}`,
+        },
+        async () => {
+          const result = await refreshAccountCredential(id);
+          if (result.status === "failed") {
+            throw new Error(result.message || "刷新凭证失败");
+          }
+          return result;
+        },
+      );
+
+      return reply.code(202).send({
+        success: true,
+        queued: true,
+        reused,
+        jobId: task.id,
+        status: task.status,
+        message: reused ? "该账号凭证刷新任务执行中" : "凭证刷新任务已提交",
+      });
     },
   );
 
@@ -2313,6 +2519,7 @@ export async function accountsRoutes(app: FastifyInstance) {
     }
 
     if (shouldRebuildRoutes) {
+      await cleanupOrphanedBrowserProfiles();
       await rebuildRoutesBestEffort();
     }
 
@@ -2390,11 +2597,56 @@ export async function accountsRoutes(app: FastifyInstance) {
     },
   );
 
-  // Refresh balance for an account
-  app.post<{ Params: { id: string } }>(
+  // Refresh balance for an account. The UI uses background mode because
+  // managed browser recovery can take longer than an ordinary HTTP timeout.
+  app.post<{ Params: { id: string }; Querystring: { background?: string } }>(
     "/api/accounts/:id/balance",
     async (request, reply) => {
-      const id = parseInt(request.params.id);
+      const id = parseInt(request.params.id, 10);
+      if (!Number.isFinite(id) || id <= 0) {
+        return reply.code(400).send({ success: false, message: "账号 ID 无效" });
+      }
+
+      const background = ["1", "true", "yes", "on"].includes(
+        String(request.query.background || "").trim().toLowerCase(),
+      );
+      if (background) {
+        const { task, reused } = startBackgroundTask(
+          {
+            type: "account-balance-refresh",
+            title: `刷新账号余额 #${id}`,
+            dedupeKey: `refresh-account-balance-${id}`,
+            notifyOnFailure: false,
+            successMessage: (currentTask) => {
+              const result = currentTask.result as {
+                quota?: number;
+                observedCheckinMessage?: string;
+              } | null;
+              if (result?.observedCheckinMessage) return result.observedCheckinMessage;
+              return typeof result?.quota === "number"
+                ? `账号 #${id} 余额已刷新，当前总额度 ${result.quota}`
+                : `账号 #${id} 余额已刷新`;
+            },
+            failureMessage: (currentTask) =>
+              `账号 #${id} 余额刷新失败：${currentTask.error || "unknown error"}`,
+          },
+          async () => {
+            const result = await refreshBalance(id);
+            if (!result) throw new Error("account not found or platform not supported");
+            return result;
+          },
+        );
+
+        return reply.code(202).send({
+          success: true,
+          queued: true,
+          reused,
+          jobId: task.id,
+          status: task.status,
+          message: reused ? "该账号余额刷新任务执行中" : "余额刷新任务已提交",
+        });
+      }
+
       try {
         const result = await refreshBalance(id);
         if (!result) {

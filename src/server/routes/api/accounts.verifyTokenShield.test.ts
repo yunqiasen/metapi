@@ -7,6 +7,8 @@ import { resetRequestRateLimitStore } from '../../middleware/requestRateLimit.js
 
 const verifyTokenMock = vi.fn();
 const undiciFetchMock = vi.fn();
+const browserSessionVerifyMock = vi.fn();
+const browserSessionProfileDiscardMock = vi.fn();
 let adapterPlatformName = 'new-api';
 
 vi.mock('../../services/platforms/index.js', () => ({
@@ -18,6 +20,11 @@ vi.mock('../../services/platforms/index.js', () => ({
 
 vi.mock('undici', () => ({
   fetch: (...args: unknown[]) => undiciFetchMock(...args),
+}));
+
+vi.mock('../../services/agentRouterSessionBrowserVerification.js', () => ({
+  verifyAgentRouterSessionInBrowser: (...args: unknown[]) => browserSessionVerifyMock(...args),
+  discardAgentRouterSessionVerificationProfile: (...args: unknown[]) => browserSessionProfileDiscardMock(...args),
 }));
 
 type DbModule = typeof import('../../db/index.js');
@@ -45,6 +52,9 @@ describe('accounts verify-token shield detection', () => {
   beforeEach(async () => {
     verifyTokenMock.mockReset();
     undiciFetchMock.mockReset();
+    browserSessionVerifyMock.mockReset();
+    browserSessionProfileDiscardMock.mockReset();
+    browserSessionProfileDiscardMock.mockResolvedValue(undefined);
     adapterPlatformName = 'new-api';
     resetRequestRateLimitStore();
 
@@ -338,4 +348,101 @@ describe('accounts verify-token shield detection', () => {
     });
     expect(undiciFetchMock).toHaveBeenCalled();
   });
+
+
+  it('falls back to isolated browser Session verification when AgentRouter returns tokenType unknown', async () => {
+    adapterPlatformName = 'agentrouter';
+    verifyTokenMock.mockResolvedValueOnce({ tokenType: 'unknown' });
+    browserSessionVerifyMock.mockResolvedValueOnce({
+      accessToken: 'session=verified-browser-session',
+      platformUserId: 51978,
+      username: 'github_51978',
+      balance: { balance: 925, used: 0, quota: 925 },
+      profileDir: '/tmp/browser-profiles/session-verification/agentrouter/pending-unknown',
+      provider: 'agentrouter',
+    });
+
+    const site = await db.insert(schema.sites).values({
+      name: 'AgentRouter',
+      url: 'https://agentrouter.example.com',
+      platform: 'agentrouter',
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/verify-token',
+      payload: {
+        siteId: site.id,
+        accessToken: 'raw-session-from-devtools',
+        platformUserId: 51978,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      tokenType: 'session',
+      userInfo: { username: 'github_51978', platformUserId: 51978 },
+      balance: { quota: 925 },
+      browserVerified: true,
+    });
+    expect(browserSessionVerifyMock).toHaveBeenCalledWith(expect.objectContaining({
+      accessToken: 'raw-session-from-devtools',
+      platformUserId: 51978,
+    }));
+    expect(browserSessionProfileDiscardMock).toHaveBeenCalledWith(
+      '/tmp/browser-profiles/session-verification/agentrouter/pending-unknown',
+    );
+  });
+
+  it('falls back to isolated browser Session verification when AgentRouter token verification times out', async () => {
+    vi.useFakeTimers();
+    adapterPlatformName = 'agentrouter';
+    verifyTokenMock.mockImplementationOnce(() => new Promise(() => {}));
+    browserSessionVerifyMock.mockResolvedValueOnce({
+      accessToken: 'session=verified-browser-session',
+      platformUserId: 51978,
+      username: 'github_51978',
+      balance: { balance: 925, used: 0, quota: 925 },
+      profileDir: '/tmp/browser-profiles/session-verification/agentrouter/pending-test',
+      provider: 'agentrouter',
+    });
+
+    const site = await db.insert(schema.sites).values({
+      name: 'AgentRouter',
+      url: 'https://agentrouter.example.com',
+      platform: 'agentrouter',
+    }).returning().get();
+
+    const responsePromise = app.inject({
+      method: 'POST',
+      url: '/api/accounts/verify-token',
+      payload: {
+        siteId: site.id,
+        accessToken: 'raw-session-from-devtools',
+        platformUserId: 51978,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(10_100);
+    const response = await responsePromise;
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      tokenType: 'session',
+      userInfo: { username: 'github_51978', platformUserId: 51978 },
+      balance: { quota: 925 },
+      browserVerified: true,
+    });
+    expect(browserSessionVerifyMock).toHaveBeenCalledWith(expect.objectContaining({
+      accessToken: 'raw-session-from-devtools',
+      platformUserId: 51978,
+      site: expect.objectContaining({ platform: 'agentrouter' }),
+    }));
+    expect(browserSessionProfileDiscardMock).toHaveBeenCalledWith(
+      '/tmp/browser-profiles/session-verification/agentrouter/pending-test',
+    );
+    vi.useRealTimers();
+  });
+
 });

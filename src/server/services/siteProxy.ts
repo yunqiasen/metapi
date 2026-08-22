@@ -64,6 +64,7 @@ let siteProxyCache: {
 const dispatcherCache = new Map<string, Dispatcher>();
 
 const accountProxyOverride = new AsyncLocalStorage<string | null>();
+const siteRequestDeadlineOverride = new AsyncLocalStorage<number>();
 
 export function withAccountProxyOverride<T>(
   proxyUrl: string | null | undefined,
@@ -72,6 +73,26 @@ export function withAccountProxyOverride<T>(
   const normalized = normalizeSiteProxyUrl(proxyUrl);
   if (!normalized) return fn();
   return accountProxyOverride.run(normalized, fn);
+}
+
+
+export function withSiteRequestTimeout<T>(timeoutMs: number, fn: () => T): T {
+  const normalizedTimeoutMs = Number.isFinite(timeoutMs) ? Math.max(1, Math.trunc(timeoutMs)) : 1;
+  const requestedDeadline = Date.now() + normalizedTimeoutMs;
+  const inheritedDeadline = siteRequestDeadlineOverride.getStore();
+  const deadline = inheritedDeadline
+    ? Math.min(inheritedDeadline, requestedDeadline)
+    : requestedDeadline;
+  return siteRequestDeadlineOverride.run(deadline, fn);
+}
+
+function applySiteRequestDeadline(options?: UndiciRequestInit): UndiciRequestInit {
+  const nextOptions: UndiciRequestInit = { ...(options || {}) };
+  if (nextOptions.signal) return nextOptions;
+  const deadline = siteRequestDeadlineOverride.getStore();
+  if (!deadline) return nextOptions;
+  nextOptions.signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+  return nextOptions;
 }
 
 type ParsedSocksProxyConfig = {
@@ -402,14 +423,16 @@ export async function resolveSiteProxyUrlByRequestUrl(requestUrl: string): Promi
   return resolved.proxyUrl;
 }
 
+export async function resolveEffectiveSiteProxyUrlByRequestUrl(requestUrl: string): Promise<string | null> {
+  return accountProxyOverride.getStore() ?? resolveSiteProxyUrlByRequestUrl(requestUrl);
+}
+
 export async function withSiteProxyRequestInit(
   requestUrl: string,
   options?: UndiciRequestInit,
 ): Promise<UndiciRequestInit> {
   const resolved = await resolveSiteRequestConfigByRequestUrl(requestUrl);
-  const nextOptions: UndiciRequestInit = {
-    ...(options || {}),
-  };
+  const nextOptions = applySiteRequestDeadline(options);
   const mergedHeaders = mergeHeadersWithSiteCustomHeaders(resolved.customHeaders, options?.headers);
   if (mergedHeaders) {
     nextOptions.headers = mergedHeaders;
@@ -438,14 +461,15 @@ export function withExplicitProxyRequestInit(
   options?: UndiciRequestInit,
   skipCache = false,
 ): UndiciRequestInit {
+  const boundedOptions = applySiteRequestDeadline(options);
   const normalized = normalizeSiteProxyUrl(proxyUrl);
-  if (!normalized) return options ?? {};
+  if (!normalized) return boundedOptions;
 
   const dispatcher = getDispatcherByProxyUrl(normalized, skipCache);
-  if (!dispatcher) return options ?? {};
+  if (!dispatcher) return boundedOptions;
 
   return {
-    ...(options || {}),
+    ...boundedOptions,
     dispatcher,
   };
 }

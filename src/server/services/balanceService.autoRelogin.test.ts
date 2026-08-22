@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const adapterMock = {
+  balanceFallbackMode: 'none' as 'none' | 'managed-browser-profile',
   getBalance: vi.fn(),
   login: vi.fn(),
 };
 
 const selectAllMock = vi.fn();
+const selectGetMock = vi.fn();
 const updateSetMock = vi.fn();
 const insertValuesMock = vi.fn();
 const reportTokenExpiredMock = vi.fn();
@@ -15,10 +17,13 @@ const refreshManagedAccountLoginMock = vi.fn();
 const setAccountRuntimeHealthMock = vi.fn();
 const extractRuntimeHealthMock = vi.fn();
 const undiciFetchMock = vi.fn();
+const readAgentRouterBalanceFromProfileMock = vi.fn();
+const readAnyRouterBalanceFromProfileMock = vi.fn();
 
 vi.mock('../db/index.js', () => {
   const selectChain = {
     all: () => selectAllMock(),
+    get: () => selectGetMock(),
     where: () => selectChain,
     innerJoin: () => selectChain,
     from: () => selectChain,
@@ -55,6 +60,7 @@ vi.mock('../db/index.js', () => {
       accounts: { id: 'id', siteId: 'siteId', status: 'status' },
       sites: { id: 'id' },
       events: {},
+      checkinLogs: {},
     },
   };
 });
@@ -88,11 +94,22 @@ vi.mock('undici', () => ({
   fetch: (...args: unknown[]) => undiciFetchMock(...args),
 }));
 
+vi.mock('./agentRouterReloginBrowser.js', () => ({
+  readAgentRouterBalanceFromProfile: (...args: unknown[]) => readAgentRouterBalanceFromProfileMock(...args),
+}));
+
+vi.mock('./anyRouterBrowserVisitCheckinBrowser.js', () => ({
+  readAnyRouterBalanceFromProfile: (...args: unknown[]) => readAnyRouterBalanceFromProfileMock(...args),
+}));
+
+
 describe('balanceService auto relogin', () => {
   beforeEach(() => {
+    adapterMock.balanceFallbackMode = 'none';
     adapterMock.getBalance.mockReset();
     adapterMock.login.mockReset();
     selectAllMock.mockReset();
+    selectGetMock.mockReset();
     updateSetMock.mockReset();
     insertValuesMock.mockReset();
     reportTokenExpiredMock.mockReset();
@@ -102,6 +119,9 @@ describe('balanceService auto relogin', () => {
     setAccountRuntimeHealthMock.mockReset();
     extractRuntimeHealthMock.mockReset();
     undiciFetchMock.mockReset();
+    readAgentRouterBalanceFromProfileMock.mockReset();
+    readAnyRouterBalanceFromProfileMock.mockReset();
+    delete process.env.METAPI_BALANCE_REQUEST_TIMEOUT_MS;
 
     extractRuntimeHealthMock.mockReturnValue(null);
     undiciFetchMock.mockResolvedValue({
@@ -110,7 +130,41 @@ describe('balanceService auto relogin', () => {
     });
   });
 
-  it('uses managed browser profile relogin for AgentRouter balance refresh and retries with refreshed user id', async () => {
+  it('waits for the account lease before reading the database and refreshing balance', async () => {
+    selectAllMock.mockReturnValue([{
+      accounts: {
+        id: 77,
+        username: 'locked-account',
+        accessToken: 'session=active',
+        status: 'active',
+        extraConfig: JSON.stringify({ platformUserId: 77, credentialMode: 'session' }),
+      },
+      sites: { id: 7, name: 'Locked', url: 'https://locked.example', platform: 'new-api' },
+    }]);
+    adapterMock.getBalance.mockResolvedValue({ balance: 10, used: 2, quota: 12 });
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const holding = new Promise<void>((resolve) => { started = resolve; });
+    const { withAccountBrowserProfileLease } = await import('./accountBrowserProfileLease.js');
+    const { refreshBalance } = await import('./balanceService.js');
+    const holder = withAccountBrowserProfileLease(77, async () => {
+      started();
+      await gate;
+    });
+    await holding;
+
+    const refresh = refreshBalance(77);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(selectAllMock).not.toHaveBeenCalled();
+    expect(adapterMock.getBalance).not.toHaveBeenCalled();
+
+    release();
+    await holder;
+    await expect(refresh).resolves.toEqual({ balance: 10, used: 2, quota: 12 });
+  });
+
+  it('reads AgentRouter balance from the existing Profile after a Session 401 without reauthenticating', async () => {
     selectAllMock.mockReturnValue([
       {
         accounts: {
@@ -134,26 +188,286 @@ describe('balanceService auto relogin', () => {
       },
     ]);
 
-    adapterMock.getBalance
-      .mockRejectedValueOnce(new Error('HTTP 401: access token required'))
-      .mockResolvedValueOnce({ balance: 30, used: 2, quota: 32 });
-    refreshManagedAccountLoginMock.mockResolvedValueOnce({
-      accessToken: 'session=fresh-agent; acw_tc=waf-agent',
-      platformUserId: 3102,
-      extraConfig: JSON.stringify({ platformUserId: 3102 }),
-    });
+    adapterMock.balanceFallbackMode = 'managed-browser-profile';
+    adapterMock.getBalance.mockRejectedValueOnce(new Error('HTTP 401: access token required'));
+    readAgentRouterBalanceFromProfileMock.mockResolvedValueOnce({ balance: 30, used: 2, quota: 32 });
 
     const { refreshBalance } = await import('./balanceService.js');
     const result = await refreshBalance(31);
 
     expect(result).toEqual({ balance: 30, used: 2, quota: 32 });
-    expect(refreshManagedAccountLoginMock).toHaveBeenCalledTimes(1);
+    expect(readAgentRouterBalanceFromProfileMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 31 }),
+      expect.objectContaining({ platform: 'agentrouter' }),
+    );
+    expect(refreshManagedAccountLoginMock).not.toHaveBeenCalled();
     expect(adapterMock.login).not.toHaveBeenCalled();
-    expect(adapterMock.getBalance).toHaveBeenCalledTimes(2);
+    expect(adapterMock.getBalance).toHaveBeenCalledTimes(1);
     expect(adapterMock.getBalance.mock.calls[0][1]).toBe('session=stale; acw_tc=old');
     expect(adapterMock.getBalance.mock.calls[0][2]).toBe(3101);
-    expect(adapterMock.getBalance.mock.calls[1][1]).toBe('session=fresh-agent; acw_tc=waf-agent');
-    expect(adapterMock.getBalance.mock.calls[1][2]).toBe(3102);
+  });
+
+  it('records an AgentRouter check-in when an authenticated balance read increases total quota', async () => {
+    selectAllMock.mockReturnValue([{
+      accounts: {
+        id: 94,
+        username: 'linuxdo_59260',
+        accessToken: 'session=active',
+        status: 'active',
+        checkinEnabled: true,
+        balance: -0.294956,
+        balanceUsed: 1625.294956,
+        quota: 1625,
+        lastCheckinAt: null,
+        extraConfig: JSON.stringify({
+          platformUserId: 59260,
+          credentialMode: 'session',
+          agentRouterBalanceProxyUrl: 'http://management-proxy:7890',
+          managedBrowserProfile: { enabled: true, loginProvider: 'linuxdo' },
+        }),
+      },
+      sites: {
+        id: 94,
+        name: 'AgentRouter',
+        url: 'https://agentrouter.org',
+        platform: 'agentrouter',
+      },
+    }]);
+    adapterMock.balanceFallbackMode = 'managed-browser-profile';
+    adapterMock.getBalance.mockResolvedValueOnce({ balance: -0.294956, used: 1675.294956, quota: 1675 });
+
+    const { refreshBalance } = await import('./balanceService.js');
+    const result = await refreshBalance(94);
+
+    expect(result).toMatchObject({
+      quota: 1675,
+      observedCheckinReward: '总额度 +50',
+      observedCheckinMessage: 'AgentRouter 签到成功：总额度 +50，当前总额度 1675',
+    });
+    expect(updateSetMock).toHaveBeenCalledWith(expect.objectContaining({
+      lastCheckinAt: expect.any(String),
+    }));
+    expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 94,
+      status: 'success',
+      reward: '总额度 +50',
+    }));
+  });
+
+  it('tries the dedicated AgentRouter management proxy before falling back to the browser Profile', async () => {
+    selectAllMock.mockReturnValue([{
+      accounts: {
+        id: 94,
+        username: 'linuxdo_59260',
+        accessToken: 'session=active',
+        status: 'active',
+        extraConfig: JSON.stringify({
+          platformUserId: 59260,
+          credentialMode: 'session',
+          proxyUrl: 'http://account-proxy:7890',
+          agentRouterBalanceProxyUrl: 'http://management-proxy:7890',
+          managedBrowserProfile: { enabled: true, loginProvider: 'linuxdo' },
+        }),
+      },
+      sites: {
+        id: 94,
+        name: 'AgentRouter',
+        url: 'https://agentrouter.org',
+        platform: 'agentrouter',
+      },
+    }]);
+    adapterMock.balanceFallbackMode = 'managed-browser-profile';
+    adapterMock.getBalance
+      .mockRejectedValueOnce(new Error('upstream_html_response'))
+      .mockResolvedValueOnce({ balance: -0.294956, used: 1675.294956, quota: 1675 });
+
+    const { refreshBalance } = await import('./balanceService.js');
+    const result = await refreshBalance(94);
+
+    expect(result).toEqual({ balance: -0.294956, used: 1675.294956, quota: 1675 });
+    expect(adapterMock.getBalance).toHaveBeenCalledTimes(2);
+    expect(readAgentRouterBalanceFromProfileMock).not.toHaveBeenCalled();
+    expect(refreshManagedAccountLoginMock).not.toHaveBeenCalled();
+  });
+
+
+  it('times out a stalled AgentRouter account route and still uses the dedicated management proxy', async () => {
+    process.env.METAPI_BALANCE_REQUEST_TIMEOUT_MS = '10';
+    selectAllMock.mockReturnValue([{
+      accounts: {
+        id: 94,
+        username: 'linuxdo_59260',
+        accessToken: 'session=active',
+        status: 'active',
+        extraConfig: JSON.stringify({
+          platformUserId: 59260,
+          credentialMode: 'session',
+          proxyUrl: 'http://account-proxy:7890',
+          agentRouterBalanceProxyUrl: 'http://management-proxy:7890',
+          managedBrowserProfile: { enabled: true, loginProvider: 'linuxdo' },
+        }),
+      },
+      sites: {
+        id: 94,
+        name: 'AgentRouter',
+        url: 'https://agentrouter.org',
+        platform: 'agentrouter',
+      },
+    }]);
+    adapterMock.balanceFallbackMode = 'managed-browser-profile';
+    adapterMock.getBalance
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockResolvedValueOnce({ balance: -0.294956, used: 1675.294956, quota: 1675 });
+
+    const { refreshBalance } = await import('./balanceService.js');
+    const result = await Promise.race([
+      refreshBalance(94),
+      new Promise<'test-timeout'>((resolve) => setTimeout(() => resolve('test-timeout'), 150)),
+    ]);
+
+    expect(result).not.toBe('test-timeout');
+    expect(result).toEqual({ balance: -0.294956, used: 1675.294956, quota: 1675 });
+    expect(adapterMock.getBalance).toHaveBeenCalledTimes(2);
+    expect(readAgentRouterBalanceFromProfileMock).not.toHaveBeenCalled();
+  });
+
+  it('reads AnyRouter balance from a read-only browser self page without invoking credential refresh', async () => {
+    selectAllMock.mockReturnValue([{
+      accounts: {
+        id: 91,
+        username: 'sqjwrre24',
+        accessToken: 'session=active',
+        status: 'active',
+        extraConfig: JSON.stringify({
+          platformUserId: 200029,
+          credentialMode: 'session',
+          managedBrowserProfile: { enabled: true },
+        }),
+      },
+      sites: {
+        id: 9,
+        name: 'AnyRouter',
+        url: 'https://anyrouter.top',
+        platform: 'anyrouter',
+      },
+    }]);
+    adapterMock.balanceFallbackMode = 'managed-browser-profile';
+    adapterMock.getBalance.mockRejectedValueOnce(new Error('upstream_html_response'));
+    readAnyRouterBalanceFromProfileMock.mockResolvedValueOnce({
+      balance: 61.147422,
+      used: 838.852578,
+      quota: 900,
+    });
+
+    const { refreshBalance } = await import('./balanceService.js');
+    const result = await refreshBalance(91);
+
+    expect(result).toEqual({ balance: 61.147422, used: 838.852578, quota: 900 });
+    expect(readAnyRouterBalanceFromProfileMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 91 }),
+      expect.objectContaining({ platform: 'anyrouter' }),
+    );
+    expect(readAgentRouterBalanceFromProfileMock).not.toHaveBeenCalled();
+    expect(refreshManagedAccountLoginMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the persisted AgentRouter browser profile when HTTP clients receive HTML', async () => {
+    selectAllMock.mockReturnValue([
+      {
+        accounts: {
+          id: 94,
+          username: 'linuxdo_59260',
+          accessToken: 'session=active',
+          status: 'active',
+          extraConfig: JSON.stringify({
+            platformUserId: 59260,
+            credentialMode: 'session',
+            managedBrowserProfile: { enabled: true, loginProvider: 'linuxdo' },
+          }),
+        },
+        sites: {
+          id: 94,
+          name: 'AgentRouter',
+          url: 'https://agentrouter.org',
+          platform: 'agentrouter',
+        },
+      },
+    ]);
+    adapterMock.balanceFallbackMode = 'managed-browser-profile';
+    adapterMock.getBalance.mockRejectedValueOnce(new Error('upstream_html_response'));
+    readAgentRouterBalanceFromProfileMock.mockResolvedValueOnce({
+      balance: 838.116486,
+      used: 511.883514,
+      quota: 1350,
+    });
+
+    const { refreshBalance } = await import('./balanceService.js');
+    const result = await refreshBalance(94);
+
+    expect(result).toEqual({ balance: 838.116486, used: 511.883514, quota: 1350 });
+    expect(readAgentRouterBalanceFromProfileMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 94 }),
+      expect.objectContaining({ platform: 'agentrouter' }),
+    );
+    expect(refreshManagedAccountLoginMock).not.toHaveBeenCalled();
+    expect(setAccountRuntimeHealthMock).toHaveBeenCalledWith(94, expect.objectContaining({ state: 'healthy' }));
+  });
+
+  it('uses the persisted AgentRouter browser profile when HTTP clients time out', async () => {
+    selectAllMock.mockReturnValue([
+      {
+        accounts: {
+          id: 102,
+          username: 'github_166363',
+          accessToken: 'session=active',
+          status: 'active',
+          extraConfig: JSON.stringify({
+            platformUserId: 166363,
+            credentialMode: 'session',
+            managedBrowserProfile: { enabled: true, loginProvider: 'github' },
+          }),
+        },
+        sites: {
+          id: 102,
+          name: 'AgentRouter',
+          url: 'https://agentrouter.org',
+          platform: 'agentrouter',
+        },
+      },
+    ]);
+    adapterMock.balanceFallbackMode = 'managed-browser-profile';
+    adapterMock.getBalance.mockRejectedValueOnce(new Error('agentrouter_undici_timeout'));
+    readAgentRouterBalanceFromProfileMock.mockResolvedValueOnce({
+      balance: 797.782512,
+      used: 2.217488,
+      quota: 800,
+    });
+    undiciFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { items: [], total: 0 } }),
+    });
+
+    const { refreshBalance } = await import('./balanceService.js');
+    const result = await refreshBalance(102);
+
+    expect(result).toEqual({ balance: 797.782512, used: 2.217488, quota: 800, todayIncome: 0 });
+    expect(readAgentRouterBalanceFromProfileMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 102 }),
+      expect.objectContaining({ platform: 'agentrouter' }),
+    );
+    expect(refreshManagedAccountLoginMock).not.toHaveBeenCalled();
+    expect(setAccountRuntimeHealthMock).toHaveBeenCalledWith(102, expect.objectContaining({ state: 'healthy' }));
+    expect(selectGetMock).not.toHaveBeenCalled();
+    const persistedBalanceUpdate = updateSetMock.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((payload) => payload.balance === 797.782512);
+    expect(JSON.parse(String(persistedBalanceUpdate?.extraConfig))).toMatchObject({
+      managedBrowserProfile: {
+        enabled: true,
+        loginProvider: 'github',
+      },
+      todayIncomeSnapshot: expect.any(Object),
+    });
   });
 
   it('retries balance fetch once after successful auto relogin', async () => {

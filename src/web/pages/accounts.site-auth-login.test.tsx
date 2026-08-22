@@ -17,6 +17,8 @@ const { apiMock } = vi.hoisted(() => ({
     createAccountFromSiteAuthCredential: vi.fn(),
     startAccountSiteAuthBrowserLogin: vi.fn(),
     importSiteAuthCredential: vi.fn(),
+    rebindAccountBrowserProfile: vi.fn(),
+    getTask: vi.fn(),
   },
 }));
 
@@ -166,6 +168,10 @@ describe('Accounts site auth login', () => {
       credentialMode: 'session',
       queued: false,
     });
+    apiMock.getTask.mockResolvedValue({
+      success: true,
+      task: { id: 'account-init-100', status: 'succeeded', message: '初始化连接 #100已完成' },
+    });
     apiMock.importSiteAuthCredential.mockResolvedValue({
       success: true,
       item: {
@@ -181,6 +187,99 @@ describe('Accounts site auth login', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('rebinds an expired AgentRouter account through its original browser Profile', async () => {
+    const popup = { location: { href: '' }, focus: vi.fn(), close: vi.fn() };
+    const openSpy = installMessageWindow(vi.fn((..._args: unknown[]) => popup));
+    apiMock.getAccounts.mockResolvedValue([{
+      id: 94,
+      siteId: 32,
+      username: 'linuxdo_59260',
+      accessToken: 'session=expired',
+      status: 'expired',
+      extraConfig: JSON.stringify({
+        credentialMode: 'session',
+        platformUserId: 59260,
+        managedBrowserProfile: { enabled: true, loginProvider: 'linuxdo' },
+      }),
+      site: { id: 32, name: 'AgentRouter', platform: 'agentrouter', status: 'active', url: 'https://agentrouter.org' },
+    }]);
+    apiMock.getSites.mockResolvedValue([
+      { id: 32, name: 'AgentRouter', platform: 'agentrouter', status: 'active', url: 'https://agentrouter.org' },
+    ]);
+    apiMock.startAccountSiteAuthBrowserLogin.mockResolvedValueOnce({
+      success: true,
+      siteId: 32,
+      accountId: 94,
+      authorizationUrl: 'http://metapi.local/site-auth/target-browser/rebind-state-94',
+      targetSiteUrl: 'https://agentrouter.org',
+      instructions: { mode: 'target_site_browser_login', source: 'managed_target_profile_rebind' },
+    });
+    apiMock.rebindAccountBrowserProfile.mockResolvedValueOnce({ success: true, account: { id: 94, status: 'active' } });
+
+    let root!: WebTestRenderer;
+    await act(async () => {
+      root = create(
+        <MemoryRouter initialEntries={['/accounts']}>
+          <ToastProvider>
+            <Accounts />
+          </ToastProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushMicrotasks();
+
+    try {
+      const rebindButton = root.root.findAll((node) => (
+        node.type === 'button'
+        && typeof node.props.onClick === 'function'
+        && collectText(node).includes('重新绑定')
+      ))[0];
+      await act(async () => {
+        await rebindButton.props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(collectText(root.root)).toContain('打开浏览器重新绑定 Profile');
+      await clickButton(root, '打开浏览器重新绑定 Profile');
+
+      expect(apiMock.startAccountSiteAuthBrowserLogin).toHaveBeenCalledWith({
+        siteId: 32,
+        accountId: 94,
+      });
+      expect(openSpy).toHaveBeenCalledWith(
+        'about:blank',
+        'metapi-target-site-rebind-94',
+        expect.stringContaining('popup=yes'),
+      );
+      expect(popup.location.href).toContain('/site-auth/target-browser/rebind-state-94');
+
+      await act(async () => {
+        window.dispatchEvent(new MessageEvent('message', {
+          data: {
+            type: 'metapi-target-site-auth',
+            status: 'success',
+            state: 'rebind-state-94',
+            siteId: 32,
+            accountId: 94,
+            accessToken: 'session=fresh-agent',
+            username: 'linuxdo_59260',
+            platformUserId: 59260,
+          },
+        }));
+      });
+      await vi.waitFor(async () => {
+        await flushMicrotasks();
+        expect(apiMock.rebindAccountBrowserProfile).toHaveBeenCalledWith(94, {
+          state: 'rebind-state-94',
+        });
+      });
+      expect(collectText(root.root)).toContain('浏览器 Profile 重新绑定成功');
+    } finally {
+      await act(async () => root?.unmount());
+      vi.unstubAllGlobals();
+    }
   });
 
   it('creates a Session connection from a saved site auth credential', async () => {
@@ -261,7 +360,7 @@ describe('Accounts site auth login', () => {
     }
   });
 
-  it('routes AnyRouter and AgentRouter account maintenance to target-site profile login instead of password login', async () => {
+  it('keeps AnyRouter and AgentRouter profile login while allowing password login fallback', async () => {
     const popup = { location: { href: '' }, focus: vi.fn(), close: vi.fn(), document: { title: '', body: { innerHTML: '' } } };
     const openSpy = vi.fn((..._args: unknown[]) => popup);
     vi.stubGlobal('window', { open: openSpy });
@@ -305,9 +404,7 @@ describe('Accounts site auth login', () => {
       const text = collectText(root.root);
       expect(text).toContain('Any/Agent 真实站点登录维护');
       expect(text).toContain('打开站点登录窗口并保存 Profile');
-      expect(text).not.toContain('使用账号密码登录并维护 Profile');
-      expect(root.root.findAll((node) => node.type === 'input' && node.props.placeholder === '用户名').length).toBe(0);
-      expect(root.root.findAll((node) => node.type === 'input' && node.props.placeholder === '密码').length).toBe(0);
+      expect(text).toContain('账号密码登录');
       expect(text).not.toContain('第三方授权登录');
       expect(text).not.toContain('OAuth 管理');
       expect(text).not.toContain('使用已保存 GitHub 登录该站点');
@@ -322,6 +419,20 @@ describe('Accounts site auth login', () => {
         'metapi-target-site-login-32',
         expect.stringContaining('popup=yes'),
       );
+
+      await clickButton(root, '账号密码登录');
+      const loginSelect = root.root
+        .findAllByType(ModernSelect)
+        .find((node) => node.props.options?.some?.((option: any) => option.value === '32'));
+      expect(loginSelect).toBeTruthy();
+      expect(loginSelect!.props.options).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ value: '32', label: 'AgentRouter (agentrouter)' }),
+        ]),
+      );
+      expect(collectText(root.root)).toContain('账号密码会走协议登录，不会启动浏览器或保存 Profile');
+      expect(root.root.findAll((node) => node.type === 'input' && node.props.placeholder === '用户名').length).toBe(1);
+      expect(root.root.findAll((node) => node.type === 'input' && node.props.placeholder === '密码').length).toBe(1);
     } finally {
       await act(async () => {
         root?.unmount();
@@ -466,8 +577,17 @@ describe('Accounts site auth login', () => {
     }
   });
 
-  it('fills the Session form and submits the normal add flow after target-site OAuth extraction succeeds', async () => {
+  it('fills the Session form, waits for queued initialization, and then reports the add flow complete', async () => {
     const openSpy = installMessageWindow();
+    apiMock.addAccount.mockResolvedValueOnce({
+      id: 100,
+      username: 'GitHub · octocat',
+      tokenType: 'session',
+      credentialMode: 'session',
+      queued: true,
+      jobId: 'account-init-100',
+      message: '账号已添加，后台正在同步令牌和余额信息。',
+    });
     apiMock.getSiteAuthRequirements.mockResolvedValueOnce({
       siteId: 31,
       hasThirdPartyLogin: true,
@@ -547,7 +667,8 @@ describe('Accounts site auth login', () => {
         },
       }));
       expect(apiMock.createAccountFromSiteAuthCredential).not.toHaveBeenCalled();
-      expect(collectText(root.root)).toContain('已自动填入目标站 Session，并提交添加连接');
+      expect(apiMock.getTask).toHaveBeenCalledWith('account-init-100');
+      expect(collectText(root.root)).toContain('初始化连接 #100已完成');
     } finally {
       await act(async () => {
         root?.unmount();

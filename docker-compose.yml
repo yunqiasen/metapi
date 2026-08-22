@@ -5,6 +5,7 @@ services:
       dockerfile: docker/Dockerfile
     image: yunqiasen/metapi:metapi-fork
     container_name: metapi
+    init: true
     ports:
       - "4000:4000"
       - "${NOVNC_PORT:-6080}:${SITE_AUTH_NOVNC_PORT:-6080}"
@@ -16,8 +17,10 @@ services:
       ACCOUNT_CREDENTIAL_SECRET: ${ACCOUNT_CREDENTIAL_SECRET:?ACCOUNT_CREDENTIAL_SECRET is required}
       SITE_AUTH_BROWSER_EXECUTABLE_PATH: ${SITE_AUTH_BROWSER_EXECUTABLE_PATH:-/usr/bin/chromium}
       SITE_AUTH_BROWSER_PROXY_URL: ${SITE_AUTH_BROWSER_PROXY_URL:-}
+      AGENTROUTER_BROWSER_PROXY_URL: ${AGENTROUTER_BROWSER_PROXY_URL:-http://metapi-browser-proxy:7891}
       SITE_AUTH_BROWSER_HEADLESS: ${SITE_AUTH_BROWSER_HEADLESS:-false}
       SITE_AUTH_BROWSER_DISPLAY: ${SITE_AUTH_BROWSER_DISPLAY:-:99}
+      CLOAKBROWSER_CACHE_DIR: ${CLOAKBROWSER_CACHE_DIR:-/app/data/cloakbrowser-cache}
       SITE_AUTH_NOVNC_PORT: ${SITE_AUTH_NOVNC_PORT:-6080}
       SITE_AUTH_VNC_PORT: ${SITE_AUTH_VNC_PORT:-5900}
       CHECKIN_CRON: ${CHECKIN_CRON:-0 8 * * *}
@@ -26,4 +29,21 @@ services:
       HOST: 0.0.0.0
       DATA_DIR: /app/data
       TZ: ${TZ:-Asia/Shanghai}
+    depends_on:
+      - browser-proxy
     restart: unless-stopped
+
+
+  browser-proxy:
+    image: metacubex/mihomo:latest
+    container_name: metapi-browser-proxy
+    volumes:
+      - browser_proxy_state:/root/.config/mihomo
+      - ./data/browser-proxy/config.yaml:/root/.config/mihomo/config.yaml:ro
+    ports:
+      - "41002:7890"
+      - "127.0.0.1:42002:9090"
+    restart: unless-stopped
+
+volumes:
+  browser_proxy_state:

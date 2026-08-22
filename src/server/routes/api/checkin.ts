@@ -5,7 +5,8 @@ import { upsertSetting } from '../../db/upsertSetting.js';
 import { eq, desc } from 'drizzle-orm';
 import { checkinAccount, checkinAll } from '../../services/checkinService.js';
 import { updateCheckinSchedule } from '../../services/checkinScheduler.js';
-import { startBackgroundTask, summarizeCheckinResults } from '../../services/backgroundTaskService.js';
+import { appendBackgroundTaskLog, startBackgroundTask, summarizeCheckinResults } from '../../services/backgroundTaskService.js';
+import type { CheckinAllProgress } from '../../services/checkinService.js';
 import { classifyFailureReason } from '../../services/failureReasonService.js';
 
 function buildCheckinAccountLabel(item: any): string {
@@ -19,6 +20,19 @@ function buildCheckinReason(item: any): string {
   if (!message) return '';
   if (message.length <= 32) return message;
   return `${message.slice(0, 32)}...`;
+}
+
+function buildCheckinProgressMessage(progress: CheckinAllProgress): string {
+  const status = progress.result?.status === 'skipped' || progress.result?.skipped
+    ? '跳过'
+    : progress.result?.success
+      ? '成功'
+      : '失败';
+  const detail = String(
+    progress.result?.reward || progress.result?.message || '',
+  ).trim();
+  const suffix = detail ? `（${detail.length > 64 ? `${detail.slice(0, 64)}...` : detail}）` : '';
+  return `签到进度 ${progress.completed}/${progress.total}：${progress.username || `#${progress.accountId}`} @ ${progress.site} - ${status}${suffix}`;
 }
 
 function buildCheckinTaskDetailMessage(results: any[]): string {
@@ -61,16 +75,22 @@ function buildCheckinTaskDetailMessage(results: any[]): string {
 export async function checkinRoutes(app: FastifyInstance) {
   // Trigger check-in for all accounts
   app.post('/api/checkin/trigger', async (_, reply) => {
+    let taskId = '';
     const { task, reused } = startBackgroundTask(
       {
         type: 'checkin',
         title: '全部账号签到',
         dedupeKey: 'checkin-all',
         notifyOnFailure: true,
+        successLevel: (currentTask) => {
+          const summary = (currentTask.result as any)?.summary;
+          return Number(summary?.failed || 0) > 0 ? 'error' : 'info';
+        },
         successTitle: (currentTask) => {
           const summary = (currentTask.result as any)?.summary;
           if (!summary) return '全部账号签到已完成';
-          return `全部账号签到已完成（成功${summary.success}/跳过${summary.skipped}/失败${summary.failed}）`;
+          const outcome = Number(summary.failed || 0) > 0 ? '部分失败' : '已完成';
+          return `全部账号签到${outcome}（成功${summary.success}/跳过${summary.skipped}/失败${summary.failed}）`;
         },
         failureTitle: () => '全部账号签到失败',
         successMessage: (currentTask) => {
@@ -85,7 +105,13 @@ export async function checkinRoutes(app: FastifyInstance) {
         failureMessage: (currentTask) => `全部账号签到任务失败：${currentTask.error || 'unknown error'}`,
       },
       async () => {
-        const results = await checkinAll({ scheduleMode: config.checkinScheduleMode });
+        await Promise.resolve();
+        const results = await checkinAll({
+          scheduleMode: config.checkinScheduleMode,
+          onProgress: (progress) => {
+            appendBackgroundTaskLog(taskId, buildCheckinProgressMessage(progress));
+          },
+        });
         return {
           summary: summarizeCheckinResults(results),
           total: results.length,
@@ -93,6 +119,7 @@ export async function checkinRoutes(app: FastifyInstance) {
         };
       },
     );
+    taskId = task.id;
 
     return reply.code(202).send({
       success: true,
@@ -106,11 +133,42 @@ export async function checkinRoutes(app: FastifyInstance) {
     });
   });
 
-  // Trigger check-in for a specific account
-  app.post<{ Params: { id: string } }>('/api/checkin/trigger/:id', async (request) => {
+  // Trigger check-in for a specific account without holding the UI request open.
+  app.post<{ Params: { id: string } }>('/api/checkin/trigger/:id', async (request, reply) => {
     const id = parseInt(request.params.id, 10);
-    const result = await checkinAccount(id, { scheduleMode: config.checkinScheduleMode });
-    return result;
+    if (!Number.isFinite(id) || id <= 0) {
+      return reply.code(400).send({ success: false, message: '账号 ID 无效' });
+    }
+
+    const { task, reused } = startBackgroundTask(
+      {
+        type: 'checkin',
+        title: `账号签到 #${id}`,
+        dedupeKey: `checkin-account-${id}`,
+        notifyOnFailure: false,
+        resultError: (currentTask) => {
+          const result = currentTask.result as { success?: boolean; status?: string; message?: string } | null;
+          const failed = result?.status === 'failed'
+            || (result?.success === false && result?.status !== 'skipped');
+          return failed ? result?.message || `账号 #${id} 签到失败` : '';
+        },
+        successMessage: (currentTask) => {
+          const result = currentTask.result as { message?: string } | null;
+          return result?.message || `账号 #${id} 签到已完成`;
+        },
+        failureMessage: (currentTask) => `账号 #${id} 签到失败：${currentTask.error || 'unknown error'}`,
+      },
+      () => checkinAccount(id, { scheduleMode: config.checkinScheduleMode }),
+    );
+
+    return reply.code(202).send({
+      success: true,
+      queued: true,
+      reused,
+      jobId: task.id,
+      status: task.status,
+      message: reused ? '该账号签到任务执行中' : '签到任务已提交',
+    });
   });
 
   // Get check-in logs

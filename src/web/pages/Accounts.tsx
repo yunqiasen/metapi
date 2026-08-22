@@ -56,7 +56,8 @@ type CheckinTaskFeedback = {
 };
 
 const CHECKIN_TASK_POLL_INTERVAL_MS = 1500;
-const CHECKIN_TASK_POLL_MAX_ATTEMPTS = 40;
+const BACKGROUND_TASK_POLL_MAX_ATTEMPTS = 2_400;
+const BACKGROUND_TASK_POLL_ERROR_LIMIT = 3;
 
 function wait(ms: number) {
   return new Promise<void>((resolve) => {
@@ -70,6 +71,18 @@ function resolveBackgroundTask(payload: any) {
 
 function isTerminalBackgroundTask(status: unknown) {
   return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+function hasCheckinTaskFailures(task: any): boolean {
+  const failed = Number(task?.result?.summary?.failed);
+  return Number.isFinite(failed) && failed > 0;
+}
+
+function resolveCheckinTaskFeedbackStatus(task: any): string {
+  if (task?.status === "succeeded" && hasCheckinTaskFailures(task)) {
+    return "partial_failed";
+  }
+  return String(task?.status || "running");
 }
 
 function resolveCheckinTaskMessage(task: any): string {
@@ -194,6 +207,68 @@ function isManagedBrowserAccountSite(site?: { platform?: unknown; url?: unknown 
   return platform === "anyrouter" || platform === "agentrouter" || url.includes("anyrouter") || url.includes("agentrouter");
 }
 
+function supportsDirectProfileCapture(site?: { platform?: unknown; url?: unknown } | null): boolean {
+  const platform = String(site?.platform || "").trim().toLowerCase();
+  const url = String(site?.url || "").trim().toLowerCase();
+  return isManagedBrowserAccountSite(site)
+    || platform === "new-api"
+    || platform === "one-api"
+    || platform === "newapi"
+    || url.includes("new-api");
+}
+
+function formatCheckinNumber(value: number): string {
+  const rounded = Math.round(value * 1_000_000) / 1_000_000;
+  return Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded);
+}
+
+function formatSingleCheckinResult(result: any): string {
+  const message = typeof result?.message === 'string' && result.message.trim()
+    ? result.message.trim()
+    : '签到成功';
+  const parts = [message];
+  const reward = typeof result?.reward === 'string' ? result.reward.trim() : '';
+  if (reward && !message.includes(reward)) parts.push(reward);
+  const quota = Number(result?.balanceInfo?.quota);
+  if (Number.isFinite(quota) && !message.includes('当前总额度')) {
+    parts.push(`当前总额度 ${formatCheckinNumber(quota)}`);
+  }
+  return parts.join('，');
+}
+
+function parseCheckinRewardDelta(reward: unknown): number {
+  if (typeof reward !== 'string') return 0;
+  const match = /(?:余额|额度)\s*\+\s*([0-9]+(?:\.[0-9]+)?)/.exec(reward);
+  const parsed = match?.[1] ? Number(match[1]) : 0;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function applySingleCheckinResultToRows(rows: any[], accountId: number, result: any): any[] {
+  const balance = Number(result?.balanceInfo?.balance);
+  const used = Number(result?.balanceInfo?.used);
+  const quota = Number(result?.balanceInfo?.quota);
+  if (![balance, used, quota].every(Number.isFinite)) return rows;
+  const rewardDelta = parseCheckinRewardDelta(result?.reward);
+  const checkedAt = new Date().toISOString();
+  return rows.map((account) => account.id === accountId
+    ? {
+        ...account,
+        balance,
+        balanceUsed: used,
+        quota,
+        status: 'active',
+        lastCheckinAt: checkedAt,
+        todayReward: Math.round((Number(account.todayReward || 0) + rewardDelta) * 1_000_000) / 1_000_000,
+        runtimeHealth: {
+          state: 'healthy',
+          reason: result?.message || '目标站签到状态已确认',
+          source: 'checkin',
+          checkedAt,
+        },
+      }
+    : account);
+}
+
 export default function Accounts() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -312,11 +387,17 @@ export default function Accounts() {
   const lastRebindTargetRef = useRef<any | null>(null);
   const modelModalRequestSeqRef = useRef(0);
   const siteAuthRequirementRequestSeqRef = useRef(0);
+  const backgroundTaskPollGenerationRef = useRef(0);
+  const singleCheckinInFlightRef = useRef(new Set<number>());
+  const accountMaintenanceInFlightRef = useRef(new Set<number>());
   const toast = useToast();
   if (rebindTarget) lastRebindTargetRef.current = rebindTarget;
   const activeRebindTarget = rebindTarget || lastRebindTargetRef.current;
   const isRebindSub2Api =
     (activeRebindTarget?.site?.platform || "").toLowerCase() === "sub2api";
+  const isRebindManagedBrowserProfile = isManagedBrowserAccountSite(
+    activeRebindTarget?.site,
+  );
 
   const load = async (forceRefresh = false) => {
     try {
@@ -349,6 +430,7 @@ export default function Accounts() {
     [sites, tokenForm.siteId],
   );
   const tokenSiteUsesManagedBrowserLogin = isManagedBrowserAccountSite(selectedTokenSite);
+  const tokenSiteSupportsDirectProfileCapture = supportsDirectProfileCapture(selectedTokenSite);
   const parsedApiKeys = useMemo(
     () =>
       activeSegment === "apikey"
@@ -372,16 +454,19 @@ export default function Accounts() {
   const loginSiteSelectOptions = useMemo(
     () => [
       { value: "0", label: "选择站点" },
-      ...sites
-        .filter((site: any) => !isManagedBrowserAccountSite(site))
-        .map((site: any) => ({
-          value: String(site.id),
-          label: `${site.name} (${site.platform})`,
-          description: site.url || undefined,
-        })),
+      ...sites.map((site: any) => ({
+        value: String(site.id),
+        label: `${site.name} (${site.platform})`,
+        description: site.url || undefined,
+      })),
     ],
     [sites],
   );
+  const selectedLoginSite = useMemo(
+    () => sites.find((item) => item.id === loginForm.siteId) || null,
+    [sites, loginForm.siteId],
+  );
+  const loginSiteUsesManagedBrowserLogin = isManagedBrowserAccountSite(selectedLoginSite);
   const isSub2ApiSelected =
     (selectedTokenSite?.platform || "").toLowerCase() === "sub2api";
   const activeAddCredentialMode =
@@ -519,10 +604,6 @@ export default function Accounts() {
   };
 
   const handleUseAccountPasswordLogin = () => {
-    if (tokenSiteUsesManagedBrowserLogin) {
-      toast.error("Any/Agent 请使用目标站真实登录窗口保存 Profile，不走账号密码登录");
-      return;
-    }
     setAddMode("login");
     setVerifyResult(null);
     setLoginForm((current) => ({
@@ -706,6 +787,7 @@ export default function Accounts() {
 
   useEffect(() => {
     return () => {
+      backgroundTaskPollGenerationRef.current += 1;
       if (highlightTimerRef.current) {
         clearTimeout(highlightTimerRef.current);
       }
@@ -862,10 +944,34 @@ export default function Accounts() {
         }
       }
       closeAddPanel();
+      if (result.queued) {
+        const jobId = typeof result.jobId === "string" ? result.jobId.trim() : "";
+        if (!jobId) {
+          toast.error("连接已添加，但后台没有返回初始化任务编号");
+          await load(true);
+          return;
+        }
+        toast.info(result.message || "账号已添加，正在等待后台初始化完成。");
+        let succeededTask: any = null;
+        let failedTask: any = null;
+        await pollBackgroundActionTask(jobId, {
+          onSucceeded: (task) => { succeededTask = task; },
+          onFailed: (task) => { failedTask = task; },
+        });
+        if (succeededTask) {
+          toast.success(succeededTask.message || options.successMessage || "连接初始化已完成");
+        } else if (failedTask) {
+          const reason = failedTask.error || failedTask.message || "未知错误";
+          toast.error(`连接已添加，但初始化失败：${reason}`);
+        }
+        if (seededRecommendedModels) {
+          toast.success(`已补入 ${recommendedModels.length} 个推荐模型并重建路由`);
+        }
+        await load(true);
+        return;
+      }
       if (options.successMessage) {
         toast.success(options.successMessage);
-      } else if (result.queued) {
-        toast.info(result.message || "账号已添加，后台正在同步初始化信息。");
       } else if (result.tokenType === "apikey") {
         toast.success("已添加为 API Key 账号（可用于代理转发）");
       } else {
@@ -880,7 +986,7 @@ export default function Accounts() {
           `已补入 ${recommendedModels.length} 个推荐模型并重建路由`,
         );
       }
-      load(true);
+      await load(true);
     } catch (e: any) {
       toast.error(e.message || "添加失败");
     } finally {
@@ -910,6 +1016,25 @@ export default function Accounts() {
       }
       const provider = typeof payload.provider === "string" ? payload.provider.trim() : "";
       const state = typeof payload.state === "string" ? payload.state.trim() : "";
+      const rawAccountId = Number.parseInt(String(payload.accountId || ""), 10);
+      if (Number.isFinite(rawAccountId) && rawAccountId > 0) {
+        if (!state) {
+          toast.error("目标站小窗没有返回重绑会话 ID");
+          return;
+        }
+        setRebindSaving(true);
+        void api.rebindAccountBrowserProfile(rawAccountId, { state })
+          .then(() => {
+            toast.success("浏览器 Profile 重新绑定成功");
+            closeRebindPanel();
+            return load(true);
+          })
+          .catch((error: any) => {
+            toast.error(error?.message || "浏览器 Profile 重新绑定失败");
+          })
+          .finally(() => setRebindSaving(false));
+        return;
+      }
       const rawCredentialId = Number.parseInt(String(payload.credentialId || ""), 10);
       const rawPlatformUserId = Number.parseInt(String(payload.platformUserId || ""), 10);
       const payloadUsername = typeof payload.username === "string" ? payload.username.trim() : "";
@@ -952,7 +1077,10 @@ export default function Accounts() {
   ) => {
     setActionLoading((s) => ({ ...s, [key]: true }));
     try {
-      await fn();
+      const result = await fn();
+      if (result?.success === false) {
+        throw new Error(result.message || '操作失败');
+      }
       if (successMsg) toast.success(successMsg);
     } catch (e: any) {
       toast.error(e.message || "操作失败");
@@ -962,21 +1090,120 @@ export default function Accounts() {
     }
   };
 
+  const pollBackgroundActionTask = async (
+    jobId: string,
+    callbacks: {
+      onSucceeded: (task: any) => void;
+      onFailed?: (task: any) => void;
+    },
+  ) => {
+    const normalizedJobId = jobId.trim();
+    if (!normalizedJobId) return;
+
+    const pollGeneration = backgroundTaskPollGenerationRef.current;
+    let consecutiveErrors = 0;
+    for (let attempt = 0; attempt < BACKGROUND_TASK_POLL_MAX_ATTEMPTS; attempt += 1) {
+      if (backgroundTaskPollGenerationRef.current !== pollGeneration) return;
+      try {
+        const task = resolveBackgroundTask(await api.getTask(normalizedJobId));
+        consecutiveErrors = 0;
+        if (isTerminalBackgroundTask(task?.status)) {
+          if (task.status === "succeeded") callbacks.onSucceeded(task);
+          else (callbacks.onFailed || callbacks.onSucceeded)(task);
+          return;
+        }
+      } catch (error: any) {
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= BACKGROUND_TASK_POLL_ERROR_LIMIT) {
+          callbacks.onFailed?.({
+            status: "poll_failed",
+            message: error?.message || "后台任务状态刷新失败",
+            error: error?.message || "后台任务状态刷新失败",
+          });
+          return;
+        }
+      }
+      await wait(CHECKIN_TASK_POLL_INTERVAL_MS);
+    }
+
+    callbacks.onFailed?.({
+      status: "poll_failed",
+      message: "后台任务执行时间过长，请到任务中心查看",
+      error: "后台任务执行时间过长",
+    });
+  };
+
+  const handleSingleCheckin = async (accountId: number) => {
+    if (
+      singleCheckinInFlightRef.current.has(accountId)
+      || accountMaintenanceInFlightRef.current.has(accountId)
+    ) return;
+    singleCheckinInFlightRef.current.add(accountId);
+    accountMaintenanceInFlightRef.current.add(accountId);
+    const key = `checkin-${accountId}`;
+    let handedOff = false;
+    setActionLoading((state) => ({ ...state, [key]: true }));
+    try {
+      const result = await api.triggerCheckin(accountId);
+      if (result?.queued && typeof result?.jobId === "string" && result.jobId.trim()) {
+        handedOff = true;
+        toast.info(result.message || "签到任务已提交");
+        void pollBackgroundActionTask(result.jobId, {
+          onSucceeded: (task) => {
+            const taskResult = task?.result || {};
+            setAccounts((rows) => applySingleCheckinResultToRows(rows, accountId, taskResult));
+            if (taskResult?.success === false && taskResult?.status !== "skipped" && !taskResult?.skipped) {
+              toast.error(formatSingleCheckinResult(taskResult));
+            } else if (taskResult?.status === "skipped" || taskResult?.skipped) {
+              toast.info(formatSingleCheckinResult(taskResult));
+            } else {
+              toast.success(formatSingleCheckinResult(taskResult));
+            }
+          },
+          onFailed: (task) => {
+            toast.error(task?.error || task?.message || "签到失败");
+          },
+        }).finally(() => {
+          singleCheckinInFlightRef.current.delete(accountId);
+          accountMaintenanceInFlightRef.current.delete(accountId);
+          setActionLoading((state) => ({ ...state, [key]: false }));
+        });
+        return;
+      }
+      if (result?.success === false) throw new Error(result.message || '签到失败');
+      setAccounts((rows) => applySingleCheckinResultToRows(rows, accountId, result));
+      toast.success(formatSingleCheckinResult(result));
+    } catch (error: any) {
+      toast.error(error?.message || '签到失败');
+    } finally {
+      if (!handedOff) {
+        singleCheckinInFlightRef.current.delete(accountId);
+        accountMaintenanceInFlightRef.current.delete(accountId);
+        setActionLoading((state) => ({ ...state, [key]: false }));
+      }
+    }
+  };
+
   const pollCheckinTask = async (jobId: string) => {
     const normalizedJobId = jobId.trim();
     if (!normalizedJobId) return;
 
-    for (let attempt = 0; attempt < CHECKIN_TASK_POLL_MAX_ATTEMPTS; attempt += 1) {
+    const pollGeneration = backgroundTaskPollGenerationRef.current;
+    let consecutiveErrors = 0;
+    for (let attempt = 0; attempt < BACKGROUND_TASK_POLL_MAX_ATTEMPTS; attempt += 1) {
+      if (backgroundTaskPollGenerationRef.current !== pollGeneration) return;
       try {
         const task = resolveBackgroundTask(await api.getTask(normalizedJobId));
+        consecutiveErrors = 0;
         if (isTerminalBackgroundTask(task?.status)) {
           const message = resolveCheckinTaskMessage(task);
+          const feedbackStatus = resolveCheckinTaskFeedbackStatus(task);
           setCheckinTaskFeedback({
             jobId: normalizedJobId,
-            status: task.status,
+            status: feedbackStatus,
             message,
           });
-          if (task.status === "succeeded") {
+          if (feedbackStatus === "succeeded") {
             toast.success(message);
           } else {
             toast.error(message);
@@ -984,17 +1211,28 @@ export default function Accounts() {
           await load(true);
           return;
         }
+
+        const logs = Array.isArray(task?.logs) ? task.logs : [];
+        const latestLog = logs.length > 0 ? logs[logs.length - 1]?.message : "";
+        setCheckinTaskFeedback({
+          jobId: normalizedJobId,
+          status: task?.status || "running",
+          message: latestLog || task?.message || "签到任务正在执行",
+        });
       } catch (error: any) {
-        setCheckinTaskFeedback((current) => (
-          current?.jobId === normalizedJobId
-            ? {
-              ...current,
-              status: "poll_failed",
-              message: error?.message || "签到任务状态刷新失败，请查看签到记录",
-            }
-            : current
-        ));
-        return;
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= BACKGROUND_TASK_POLL_ERROR_LIMIT) {
+          setCheckinTaskFeedback((current) => (
+            current?.jobId === normalizedJobId
+              ? {
+                ...current,
+                status: "poll_failed",
+                message: error?.message || "签到任务状态刷新失败，请查看签到记录",
+              }
+              : current
+          ));
+          return;
+        }
       }
 
       await wait(CHECKIN_TASK_POLL_INTERVAL_MS);
@@ -1005,7 +1243,7 @@ export default function Accounts() {
         ? {
           ...current,
           status: "running",
-          message: "签到任务仍在执行，请稍后查看签到记录",
+          message: "签到任务仍在后台执行，请到任务中心查看进度",
         }
         : current
     ));
@@ -1013,6 +1251,7 @@ export default function Accounts() {
 
   const handleTriggerCheckinAll = async () => {
     const key = "checkin-all";
+    let handedOff = false;
     setActionLoading((s) => ({ ...s, [key]: true }));
     try {
       const result = await api.triggerCheckinAll();
@@ -1025,7 +1264,10 @@ export default function Accounts() {
         });
         toast.info(message);
         if (typeof result.jobId === "string" && result.jobId.trim()) {
-          void pollCheckinTask(result.jobId);
+          handedOff = true;
+          void pollCheckinTask(result.jobId).finally(() => {
+            setActionLoading((state) => ({ ...state, [key]: false }));
+          });
         }
       } else {
         const message = result?.message || "签到已执行";
@@ -1038,7 +1280,9 @@ export default function Accounts() {
       setCheckinTaskFeedback({ message, status: "failed" });
       toast.error(message);
     } finally {
-      setActionLoading((s) => ({ ...s, [key]: false }));
+      if (!handedOff) {
+        setActionLoading((s) => ({ ...s, [key]: false }));
+      }
     }
   };
 
@@ -1427,6 +1671,12 @@ export default function Accounts() {
     };
   };
 
+  const isAccountMaintenanceBusy = (accountId: number) => Boolean(
+    actionLoading[`credential-refresh-${accountId}`]
+    || actionLoading[`refresh-${accountId}`]
+    || actionLoading[`checkin-${accountId}`]
+  );
+
   const handleRefreshRuntimeHealth = async () => {
     setActionLoading((s) => ({ ...s, "health-refresh": true }));
     try {
@@ -1445,10 +1695,30 @@ export default function Accounts() {
   };
 
   const handleRefreshAccountCredential = async (accountId: number) => {
+    if (accountMaintenanceInFlightRef.current.has(accountId)) return;
+    accountMaintenanceInFlightRef.current.add(accountId);
     const key = `credential-refresh-${accountId}`;
+    let handedOff = false;
     setActionLoading((state) => ({ ...state, [key]: true }));
     try {
       const res = await api.refreshAccountCredential(accountId);
+      if (res?.queued && typeof res?.jobId === "string" && res.jobId.trim()) {
+        handedOff = true;
+        toast.info(res.message || "凭证刷新任务已提交");
+        void pollBackgroundActionTask(res.jobId, {
+          onSucceeded: (task) => {
+            const result = task?.result || {};
+            if (result?.status === "skipped") toast.info(result.message || task?.message || "该账号暂不支持刷新凭证");
+            else toast.success(result?.message || task?.message || "凭证已刷新");
+          },
+          onFailed: (task) => toast.error(task?.error || task?.message || "刷新凭证失败"),
+        }).finally(() => {
+          accountMaintenanceInFlightRef.current.delete(accountId);
+          setActionLoading((state) => ({ ...state, [key]: false }));
+          void load(true);
+        });
+        return;
+      }
       if (res?.status === "success") {
         toast.success(res.message || "凭证已刷新");
       } else if (res?.status === "skipped") {
@@ -1456,28 +1726,85 @@ export default function Accounts() {
       } else {
         toast.error(res?.message || "刷新凭证失败");
       }
-      load(true);
     } catch (e: any) {
       toast.error(e.message || "刷新凭证失败");
     } finally {
-      setActionLoading((state) => ({ ...state, [key]: false }));
+      if (!handedOff) {
+        accountMaintenanceInFlightRef.current.delete(accountId);
+        setActionLoading((state) => ({ ...state, [key]: false }));
+        void load(true);
+      }
     }
   };
 
   const handleRefreshAllCredentials = async () => {
     const key = "credential-refresh-all";
+    let handedOff = false;
     setActionLoading((state) => ({ ...state, [key]: true }));
     try {
       const res = await api.refreshAllAccountCredentials();
+      if (res?.queued && typeof res?.jobId === "string" && res.jobId.trim()) {
+        handedOff = true;
+        toast.info(res.message || "全部账号凭证刷新任务已提交");
+        void pollBackgroundActionTask(res.jobId, {
+          onSucceeded: (task) => {
+            const summary = task?.result || {};
+            const message = task?.message || `刷新凭证完成：成功 ${summary?.success ?? 0}，跳过 ${summary?.skipped ?? 0}，失败 ${summary?.failed ?? 0}`;
+            if ((summary?.failed ?? 0) > 0) toast.error(message);
+            else toast.success(message);
+          },
+          onFailed: (task) => toast.error(task?.error || task?.message || "刷新凭证失败"),
+        }).finally(() => {
+          setActionLoading((state) => ({ ...state, [key]: false }));
+          void load(true);
+        });
+        return;
+      }
       const summary = res?.summary || res;
-      toast.success(
-        `刷新凭证完成：成功 ${summary?.success ?? 0}，跳过 ${summary?.skipped ?? 0}，失败 ${summary?.failed ?? 0}`,
-      );
-      load(true);
+      const message = `刷新凭证完成：成功 ${summary?.success ?? 0}，跳过 ${summary?.skipped ?? 0}，失败 ${summary?.failed ?? 0}`;
+      if ((summary?.failed ?? 0) > 0) toast.error(message);
+      else toast.success(message);
     } catch (e: any) {
       toast.error(e.message || "刷新凭证失败");
     } finally {
-      setActionLoading((state) => ({ ...state, [key]: false }));
+      if (!handedOff) {
+        setActionLoading((state) => ({ ...state, [key]: false }));
+        void load(true);
+      }
+    }
+  };
+
+  const handleRefreshBalance = async (accountId: number) => {
+    if (accountMaintenanceInFlightRef.current.has(accountId)) return;
+    accountMaintenanceInFlightRef.current.add(accountId);
+    const key = `refresh-${accountId}`;
+    let handedOff = false;
+    setActionLoading((state) => ({ ...state, [key]: true }));
+    try {
+      const res = await api.refreshBalance(accountId);
+      if (res?.queued && typeof res?.jobId === "string" && res.jobId.trim()) {
+        handedOff = true;
+        toast.info(res.message || "余额刷新任务已提交");
+        void pollBackgroundActionTask(res.jobId, {
+          onSucceeded: (task) => toast.success(task?.message || "余额已刷新"),
+          onFailed: (task) => toast.error(task?.error || task?.message || "余额刷新失败"),
+        }).finally(() => {
+          accountMaintenanceInFlightRef.current.delete(accountId);
+          setActionLoading((state) => ({ ...state, [key]: false }));
+          void load(true);
+        });
+        return;
+      }
+      if (res?.success === false) throw new Error(res.message || "余额刷新失败");
+      toast.success("余额已刷新");
+    } catch (e: any) {
+      toast.error(e.message || "余额刷新失败");
+    } finally {
+      if (!handedOff) {
+        accountMaintenanceInFlightRef.current.delete(accountId);
+        setActionLoading((state) => ({ ...state, [key]: false }));
+        void load(true);
+      }
     }
   };
 
@@ -1738,6 +2065,38 @@ export default function Accounts() {
     setRebindVerifyResult(null);
     setRebindVerifying(false);
     setRebindSaving(false);
+  };
+
+  const handleStartBrowserProfileRebind = async () => {
+    if (!rebindTarget) return;
+    const popupName = `metapi-target-site-rebind-${rebindTarget.id}`;
+    const popupFeatures = "popup=yes,width=1120,height=820,left=120,top=80";
+    const popup = typeof window !== "undefined" && typeof window.open === "function"
+      ? window.open("about:blank", popupName, popupFeatures)
+      : null;
+    if (!popup) {
+      toast.error("浏览器拦截了目标站重绑窗口，请允许弹窗后重试");
+      return;
+    }
+    try {
+      popup.document.title = "Metapi Profile 重新绑定";
+      popup.document.body.innerHTML = "<div style='font:14px sans-serif;padding:20px'>正在复制原 Profile 并打开目标站...</div>";
+    } catch {}
+    setRebindSaving(true);
+    try {
+      const started = await api.startAccountSiteAuthBrowserLogin({
+        siteId: rebindTarget.siteId,
+        accountId: rebindTarget.id,
+      });
+      popup.location.href = appendMetapiAuthToken(started.authorizationUrl);
+      try { popup.focus(); } catch {}
+      toast.success("已打开原 Profile 重新绑定窗口");
+    } catch (error: any) {
+      try { popup.close(); } catch {}
+      toast.error(error?.message || "打开 Profile 重新绑定窗口失败");
+    } finally {
+      setRebindSaving(false);
+    }
   };
 
   const handleVerifyRebindToken = async () => {
@@ -2004,16 +2363,20 @@ export default function Accounts() {
             justifyContent: "space-between",
             gap: 12,
             alignItems: "center",
-            borderColor: checkinTaskFeedback.status === "failed" ? "var(--color-error)" : "var(--color-primary)",
+            borderColor: checkinTaskFeedback.status === "failed" || checkinTaskFeedback.status === "partial_failed"
+              ? "var(--color-error)"
+              : "var(--color-primary)",
           }}
         >
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 700, color: "var(--color-text-primary)" }}>
-              {checkinTaskFeedback.status === "failed" || checkinTaskFeedback.status === "cancelled" || checkinTaskFeedback.status === "poll_failed"
-                ? "签到任务触发失败"
-                : checkinTaskFeedback.status === "succeeded"
-                  ? "签到任务已完成"
-                  : "签到任务已提交"}
+              {checkinTaskFeedback.status === "partial_failed"
+                ? "签到任务部分失败"
+                : checkinTaskFeedback.status === "failed" || checkinTaskFeedback.status === "cancelled" || checkinTaskFeedback.status === "poll_failed"
+                  ? "签到任务触发失败"
+                  : checkinTaskFeedback.status === "succeeded"
+                    ? "签到任务已完成"
+                    : "签到任务已提交"}
             </div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 4 }}>
               {checkinTaskFeedback.message}
@@ -2293,36 +2656,34 @@ export default function Accounts() {
                   >
                     Session Token / Cookie
                   </button>
-                  {!tokenSiteUsesManagedBrowserLogin && (
-                    <button
-                      onClick={() => {
-                        setAddMode("login");
-                        setVerifyResult(null);
-                      }}
-                      style={{
-                        flex: 1,
-                        padding: "8px 0",
-                        borderRadius: 6,
-                        fontSize: 13,
-                        fontWeight: 500,
-                        border: "none",
-                        cursor: "pointer",
-                        transition: "all 0.2s",
-                        background:
-                          addMode === "login"
-                            ? "var(--color-bg-card)"
-                            : "transparent",
-                        color:
-                          addMode === "login"
-                            ? "var(--color-primary)"
-                            : "var(--color-text-muted)",
-                        boxShadow:
-                          addMode === "login" ? "var(--shadow-sm)" : "none",
-                      }}
-                    >
-                      账号密码登录
-                    </button>
-                  )}
+                  <button
+                    onClick={() => {
+                      setAddMode("login");
+                      setVerifyResult(null);
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: "8px 0",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontWeight: 500,
+                      border: "none",
+                      cursor: "pointer",
+                      transition: "all 0.2s",
+                      background:
+                        addMode === "login"
+                          ? "var(--color-bg-card)"
+                          : "transparent",
+                      color:
+                        addMode === "login"
+                          ? "var(--color-primary)"
+                          : "var(--color-text-muted)",
+                      boxShadow:
+                        addMode === "login" ? "var(--shadow-sm)" : "none",
+                    }}
+                  >
+                    账号密码登录
+                  </button>
                 </div>
 
                 {addMode === "token" ? (
@@ -2402,7 +2763,7 @@ export default function Accounts() {
                         <div>
                           <div className="site-auth-session-capture-title">Any/Agent 真实站点登录维护</div>
                           <div className="site-auth-session-capture-desc">
-                            不用提前保存 GitHub / LinuxDO 凭证，也不输入 Any/Agent 账号密码。打开目标站真实登录页后，你在窗口里自己点 GitHub / LinuxDO / 验证码，Metapi 只保存目标站 Session 和浏览器 Profile。
+                            适合只能 GitHub / LinuxDO 第三方登录的账号。能用账号密码登录的 Any/Agent 账号，也可以切到「账号密码登录」。
                           </div>
                         </div>
                         <button
@@ -2416,6 +2777,24 @@ export default function Accounts() {
                       </div>
                     ) : (
                       <>
+                        {tokenSiteSupportsDirectProfileCapture && (
+                          <div className="site-auth-session-capture-row" data-i18n-skip="true">
+                            <div>
+                              <div className="site-auth-session-capture-title">真实站点登录维护</div>
+                              <div className="site-auth-session-capture-desc">
+                                适合需要手动维护目标站登录态的站点。只有主动打开该窗口才会保存浏览器 Profile；账号密码添加不会启动浏览器。
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-secondary site-auth-provider-action"
+                              onClick={() => handleStartSiteAuthBrowserLogin()}
+                              disabled={siteAuthBrowserLoginProvider === "target-site"}
+                            >
+                              {siteAuthBrowserLoginProvider === "target-site" ? "打开中..." : "打开站点登录窗口并保存 Profile"}
+                            </button>
+                          </div>
+                        )}
                         <SiteAuthRequirementPicker
                           data={siteAuthRequirements}
                           loading={
@@ -2756,6 +3135,11 @@ export default function Accounts() {
                       searchable
                       searchPlaceholder={SITE_SELECT_SEARCH_PLACEHOLDER}
                     />
+                    {loginSiteUsesManagedBrowserLogin && (
+                      <div className="info-tip">
+                        账号密码会走协议登录，不会启动浏览器或保存 Profile；第三方授权账号切回 Session 页，用真实站点登录窗口保存 Profile。
+                      </div>
+                    )}
                     <input
                       placeholder="用户名"
                       value={loginForm.username}
@@ -3211,6 +3595,30 @@ export default function Accounts() {
                     {activeRebindTarget.site?.name || "-"}。请粘贴新的 Session
                     Token，验证成功后再绑定。
                   </div>
+
+                  {isRebindManagedBrowserProfile && (
+                    <div className="site-auth-session-capture-row" data-i18n-skip="true">
+                      <div>
+                        <div className="site-auth-session-capture-title">浏览器 Profile 重新绑定</div>
+                        <div className="site-auth-session-capture-desc">
+                          从该连接原有 Profile 副本打开目标站，登录成功后直接更新原连接。
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-secondary site-auth-provider-action"
+                        onClick={handleStartBrowserProfileRebind}
+                        disabled={rebindSaving}
+                      >
+                        {rebindSaving ? "打开中..." : "打开浏览器重新绑定 Profile"}
+                      </button>
+                    </div>
+                  )}
+                  {isRebindManagedBrowserProfile && (
+                    <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>
+                      或手动粘贴 Session Token：
+                    </div>
+                  )}
 
                   <div
                     style={{
@@ -3790,9 +4198,7 @@ export default function Accounts() {
                                     onClick={() =>
                                       handleRefreshAccountCredential(a.id)
                                     }
-                                    disabled={
-                                      actionLoading[`credential-refresh-${a.id}`]
-                                    }
+                                    disabled={isAccountMaintenanceBusy(a.id)}
                                     className="btn btn-link btn-link-primary"
                                   >
                                     {actionLoading[
@@ -3804,14 +4210,8 @@ export default function Accounts() {
                                     )}
                                   </button>
                                   <button
-                                    onClick={() =>
-                                      withLoading(
-                                        `refresh-${a.id}`,
-                                        () => api.refreshBalance(a.id),
-                                        "余额已刷新",
-                                      )
-                                    }
-                                    disabled={actionLoading[`refresh-${a.id}`]}
+                                    onClick={() => handleRefreshBalance(a.id)}
+                                    disabled={isAccountMaintenanceBusy(a.id)}
                                     className="btn btn-link btn-link-primary"
                                   >
                                     {actionLoading[`refresh-${a.id}`] ? (
@@ -3825,13 +4225,9 @@ export default function Accounts() {
                               {capabilities.canCheckin && (
                                 <button
                                   onClick={() =>
-                                    withLoading(
-                                      `checkin-${a.id}`,
-                                      () => api.triggerCheckin(a.id),
-                                      "签到完成",
-                                    )
+                                    handleSingleCheckin(a.id)
                                   }
-                                  disabled={actionLoading[`checkin-${a.id}`]}
+                                  disabled={isAccountMaintenanceBusy(a.id)}
                                   className="btn btn-link btn-link-warning"
                                 >
                                   {actionLoading[`checkin-${a.id}`] ? (
@@ -4097,9 +4493,7 @@ export default function Accounts() {
                                     onClick={() =>
                                       handleRefreshAccountCredential(a.id)
                                     }
-                                    disabled={
-                                      actionLoading[`credential-refresh-${a.id}`]
-                                    }
+                                    disabled={isAccountMaintenanceBusy(a.id)}
                                     className="btn btn-link btn-link-primary"
                                   >
                                     {actionLoading[
@@ -4111,14 +4505,8 @@ export default function Accounts() {
                                     )}
                                   </button>
                                   <button
-                                    onClick={() =>
-                                      withLoading(
-                                        `refresh-${a.id}`,
-                                        () => api.refreshBalance(a.id),
-                                        "余额已刷新",
-                                      )
-                                    }
-                                    disabled={actionLoading[`refresh-${a.id}`]}
+                                    onClick={() => handleRefreshBalance(a.id)}
+                                    disabled={isAccountMaintenanceBusy(a.id)}
                                     className="btn btn-link btn-link-primary"
                                   >
                                     {actionLoading[`refresh-${a.id}`] ? (
@@ -4139,13 +4527,9 @@ export default function Accounts() {
                               {capabilities.canCheckin && (
                                 <button
                                   onClick={() =>
-                                    withLoading(
-                                      `checkin-${a.id}`,
-                                      () => api.triggerCheckin(a.id),
-                                      "签到完成",
-                                    )
+                                    handleSingleCheckin(a.id)
                                   }
-                                  disabled={actionLoading[`checkin-${a.id}`]}
+                                  disabled={isAccountMaintenanceBusy(a.id)}
                                   className="btn btn-link btn-link-warning"
                                 >
                                   {actionLoading[`checkin-${a.id}`] ? (

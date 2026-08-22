@@ -38,9 +38,18 @@ async function withHttpServer(
 }
 
 describe('getAdapter platform aliases', () => {
+  it('declares browser reauthentication as AgentRouter check-in mode', () => {
+    const adapter = getAdapter('agentrouter');
+    expect(adapter?.platformName).toBe('agentrouter');
+    expect(adapter?.checkinMode).toBe('browser-reauth');
+    expect(adapter?.balanceFallbackMode).toBe('managed-browser-profile');
+  });
+
   it('returns dedicated anyrouter adapter for anyrouter alias', () => {
     const adapter = getAdapter('anyrouter');
     expect(adapter?.platformName).toBe('anyrouter');
+    expect(adapter?.checkinMode).toBe('browser-visit');
+    expect(adapter?.balanceFallbackMode).toBe('managed-browser-profile');
   });
 
   it('handles case-insensitive platform strings', () => {

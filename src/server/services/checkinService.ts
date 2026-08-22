@@ -1,5 +1,6 @@
 import { db, schema } from '../db/index.js';
 import { getAdapter } from './platforms/index.js';
+import type { BalanceInfo } from './platforms/base.js';
 import { eq, and } from 'drizzle-orm';
 import { sendNotification } from './notifyService.js';
 import { isCloudflareChallenge, isTokenExpiredError } from './alertRules.js';
@@ -18,9 +19,27 @@ import { decryptAccountPassword } from './accountCredentialService.js';
 import { setAccountRuntimeHealth } from './accountHealthService.js';
 import { formatUtcSqlDateTime } from './localTimeService.js';
 import { withAccountProxyOverride } from './siteProxy.js';
-import { refreshManagedAccountLogin } from './accountManagedBrowserLogin.js';
+import { hasStoredAccountBrowserProfile, refreshManagedAccountLogin } from './accountManagedBrowserLogin.js';
+import { executeAgentRouterReloginCheckin } from './agentRouterReloginCheckinService.js';
+import { executeAnyRouterBrowserVisitCheckin } from './anyRouterBrowserVisitCheckinService.js';
+import { withAccountBrowserProfileLease } from './accountBrowserProfileLease.js';
 
 type CheckinExecutionStatus = 'success' | 'failed' | 'skipped';
+
+export type CheckinAllProgress = {
+  completed: number;
+  total: number;
+  accountId: number;
+  username: string | null;
+  site: string;
+  result: any;
+};
+
+type CheckinAllOptions = {
+  accountIds?: number[];
+  scheduleMode?: 'cron' | 'interval';
+  onProgress?: (progress: CheckinAllProgress) => void;
+};
 
 function isSiteDisabled(status?: string | null): boolean {
   return (status || 'active') === 'disabled';
@@ -60,6 +79,7 @@ function isUnsupportedCheckinMessage(message?: string | null): boolean {
   );
 }
 
+
 function isManualVerificationRequiredMessage(message?: string | null): boolean {
   if (!message) return false;
   const text = message.toLowerCase();
@@ -76,7 +96,17 @@ function shouldAttemptAutoRelogin(message?: string | null): boolean {
   const text = message.toLowerCase();
   if (text.includes('new-api-user')) return true;
   if (text.includes('access token')) return true;
-  return false;
+  if (text.includes('platform_user_id_missing')) return true;
+  if (isCloudflareChallenge(message)) return true;
+  return (
+    text.includes('upstream_html_response') ||
+    text.includes("unexpected token '<'") ||
+    (text.includes('not valid json') && (text.includes('<html') || text.includes('<script')))
+  );
+}
+
+function formatBalanceReward(delta: number): string {
+  return `余额 +${Number.isInteger(delta) ? Math.trunc(delta) : delta}`;
 }
 
 function inferRewardFromBalanceDelta(previousBalance: unknown, latestBalance: unknown): number {
@@ -103,16 +133,18 @@ async function tryAutoRelogin(account: any, site: any): Promise<AutoReloginResul
   const adapter = getAdapter(site.platform);
   if (!adapter) return null;
 
-  let managedRefresh: Awaited<ReturnType<typeof refreshManagedAccountLogin>> | null = null;
-  try {
-    managedRefresh = await refreshManagedAccountLogin(account, site);
-  } catch {}
-  if (managedRefresh?.accessToken) {
-    return {
-      accessToken: managedRefresh.accessToken,
-      ...(managedRefresh.platformUserId ? { platformUserId: managedRefresh.platformUserId } : {}),
-      extraConfig: managedRefresh.extraConfig,
-    };
+  if (hasStoredAccountBrowserProfile(account)) {
+    let managedRefresh: Awaited<ReturnType<typeof refreshManagedAccountLogin>> | null = null;
+    try {
+      managedRefresh = await refreshManagedAccountLogin(account, site);
+    } catch {}
+    if (managedRefresh?.accessToken) {
+      return {
+        accessToken: managedRefresh.accessToken,
+        ...(managedRefresh.platformUserId ? { platformUserId: managedRefresh.platformUserId } : {}),
+        extraConfig: managedRefresh.extraConfig,
+      };
+    }
   }
 
   const relogin = getAutoReloginConfig(account.extraConfig);
@@ -139,7 +171,7 @@ async function tryAutoRelogin(account: any, site: any): Promise<AutoReloginResul
   return { accessToken: result.accessToken };
 }
 
-export async function checkinAccount(accountId: number, options?: { skipEvent?: boolean; scheduleMode?: 'cron' | 'interval' }) {
+async function checkinAccountUnlocked(accountId: number, options?: { skipEvent?: boolean; scheduleMode?: 'cron' | 'interval' }) {
   const rows = await db
     .select()
     .from(schema.accounts)
@@ -154,7 +186,7 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
 
   if (isSiteDisabled(site.status)) {
     const createdAt = formatUtcSqlDateTime(new Date());
-    setAccountRuntimeHealth(account.id, {
+    await setAccountRuntimeHealth(account.id, {
       state: 'disabled',
       reason: '\u7ad9\u70b9\u5df2\u7981\u7528',
       source: 'checkin',
@@ -197,49 +229,71 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
   let platformUserId = resolvePlatformUserId(account.extraConfig, account.username);
 
   const accountProxyUrl = resolveProxyUrlFromExtraConfig(account.extraConfig);
+  const hasBrowserProfile = hasStoredAccountBrowserProfile(account);
+  const useAgentBrowserCheckin = hasBrowserProfile && adapter.checkinMode === 'browser-reauth';
+  const useAnyBrowserCheckin = hasBrowserProfile && adapter.checkinMode === 'browser-visit';
+  const runProtocolCheckin = () => withAccountProxyOverride(
+    accountProxyUrl,
+    () => adapter.checkin(site.url, activeAccessToken, platformUserId),
+  );
   let activeAccessToken = account.accessToken;
-  let result = await withAccountProxyOverride(accountProxyUrl,
-    () => adapter.checkin(site.url, activeAccessToken, platformUserId));
+  let browserVisitAccount = account;
+  let result = useAgentBrowserCheckin
+    ? await executeAgentRouterReloginCheckin(account, site)
+    : useAnyBrowserCheckin
+      ? await executeAnyRouterBrowserVisitCheckin(account, site)
+      : await runProtocolCheckin();
 
-  if (!result.success && shouldAttemptAutoRelogin(result.message)) {
+  const supportsProtocolRetry = !useAgentBrowserCheckin && !useAnyBrowserCheckin;
+  if (supportsProtocolRetry && !result.success && shouldAttemptAutoRelogin(result.message)) {
     const refreshed = await tryAutoRelogin(account, site);
     if (refreshed?.accessToken) {
       activeAccessToken = refreshed.accessToken;
       if (refreshed.platformUserId) platformUserId = refreshed.platformUserId;
+      browserVisitAccount = {
+        ...account,
+        accessToken: refreshed.accessToken,
+        ...(refreshed.extraConfig ? { extraConfig: refreshed.extraConfig } : {}),
+      };
       result = await withAccountProxyOverride(accountProxyUrl,
         () => adapter.checkin(site.url, activeAccessToken, platformUserId));
     }
   }
 
+  if (hasBrowserProfile && adapter.checkinMode === 'browser-visit-fallback' && !result.success) {
+    result = await executeAnyRouterBrowserVisitCheckin(browserVisitAccount, site);
+  }
+
   const isCloudflare = isCloudflareChallenge(result.message);
-  const alreadyCheckedIn = isAlreadyCheckedInMessage(result.message);
+  const explicitUnchangedCheckin = result.success === false
+    && (result as { alreadyCheckedIn?: boolean }).alreadyCheckedIn === true;
+  const alreadyCheckedIn = !explicitUnchangedCheckin && isAlreadyCheckedInMessage(result.message);
   const unsupportedCheckin = isUnsupportedCheckinMessage(result.message);
   const manualVerificationRequired = isManualVerificationRequiredMessage(result.message);
   const manualVerificationMessage = '\u7ad9\u70b9\u5f00\u542f\u4e86 Turnstile \u6821\u9a8c\uff0c\u9700\u8981\u4eba\u5de5\u7b7e\u5230';
-  const logMessage = manualVerificationRequired ? manualVerificationMessage : result.message;
+  let logMessage = manualVerificationRequired ? manualVerificationMessage : result.message;
   const effectiveSuccess = result.success || alreadyCheckedIn || unsupportedCheckin || manualVerificationRequired;
-  const shouldRefreshBalance = result.success || alreadyCheckedIn;
+  const shouldRefreshBalance = result.success || alreadyCheckedIn || explicitUnchangedCheckin;
   const directCheckinSuccess = result.success && !alreadyCheckedIn && !unsupportedCheckin;
   const shouldAdvanceLastCheckinAt = directCheckinSuccess || (alreadyCheckedIn && options?.scheduleMode !== 'interval');
-  const normalizedStatus: CheckinExecutionStatus = effectiveSuccess
-    ? ((unsupportedCheckin || manualVerificationRequired) ? 'skipped' : 'success')
-    : 'failed';
+  const normalizedStatus: CheckinExecutionStatus = explicitUnchangedCheckin
+    ? 'skipped'
+    : effectiveSuccess
+      ? ((unsupportedCheckin || manualVerificationRequired) ? 'skipped' : 'success')
+      : 'failed';
   let logReward = result.reward;
-  let refreshedBalanceInfo: Awaited<ReturnType<typeof refreshBalance>> | null = null;
+  const inlineBalanceInfo = (result as { balanceInfo?: BalanceInfo }).balanceInfo;
+  let refreshedBalanceInfo: Awaited<ReturnType<typeof refreshBalance>> | null = inlineBalanceInfo || null;
 
-  if (effectiveSuccess) {
+  if (effectiveSuccess || explicitUnchangedCheckin) {
     const healthState = (unsupportedCheckin || manualVerificationRequired) ? 'degraded' : 'healthy';
     const healthReason = unsupportedCheckin
       ? '\u7ad9\u70b9\u4e0d\u652f\u6301\u7b7e\u5230\u63a5\u53e3'
       : manualVerificationRequired
         ? manualVerificationMessage
-      : (alreadyCheckedIn ? '\u4eca\u65e5\u5df2\u7b7e\u5230' : (result.message || '\u7b7e\u5230\u6210\u529f'));
-    setAccountRuntimeHealth(account.id, {
-      state: healthState,
-      reason: healthReason,
-      source: 'checkin',
-    });
-
+        : explicitUnchangedCheckin
+          ? (result.message || '\u5df2\u7b7e\u5230\uff0c\u989d\u5ea6\u65e0\u65b0\u589e')
+          : (alreadyCheckedIn ? '\u4eca\u65e5\u5df2\u7b7e\u5230' : (result.message || '\u7b7e\u5230\u6210\u529f'));
     const updates: Record<string, unknown> = {};
     if (shouldAdvanceLastCheckinAt) {
       updates.lastCheckinAt = new Date().toISOString();
@@ -261,7 +315,7 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
         .run();
     }
 
-    if (shouldRefreshBalance) {
+    if (shouldRefreshBalance && !refreshedBalanceInfo) {
       try {
         refreshedBalanceInfo = await refreshBalance(account.id);
       } catch {}
@@ -271,9 +325,17 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
     if (directCheckinSuccess && parsedReward <= 0) {
       const inferredReward = inferRewardFromBalanceDelta(account.balance, refreshedBalanceInfo?.balance);
       if (inferredReward > 0) {
-        logReward = inferredReward.toString();
+        const formattedReward = formatBalanceReward(inferredReward);
+        logReward = formattedReward;
+        logMessage = logMessage ? `${logMessage}（${formattedReward}）` : formattedReward;
       }
     }
+
+    await setAccountRuntimeHealth(account.id, {
+      state: healthState,
+      reason: healthReason,
+      source: 'checkin',
+    });
   }
 
   const createdAt = formatUtcSqlDateTime(new Date());
@@ -288,19 +350,21 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
   if (!options?.skipEvent) {
     await db.insert(schema.events).values({
       type: 'checkin',
-      title: effectiveSuccess
-        ? (normalizedStatus === 'skipped' ? 'checkin skipped' : 'checkin success')
-        : (isCloudflare ? 'checkin failed (cloudflare challenge)' : 'checkin failed'),
+      title: normalizedStatus === 'skipped'
+        ? 'checkin skipped'
+        : normalizedStatus === 'success'
+          ? 'checkin success'
+          : (isCloudflare ? 'checkin failed (cloudflare challenge)' : 'checkin failed'),
       message: `${account.username || 'ID:' + accountId} @ ${site.name}: ${logMessage}`,
-      level: effectiveSuccess ? 'info' : 'error',
+      level: normalizedStatus === 'failed' ? 'error' : 'info',
       relatedId: accountId,
       relatedType: 'account',
       createdAt,
     }).run();
   }
 
-  if (!effectiveSuccess) {
-    setAccountRuntimeHealth(account.id, {
+  if (normalizedStatus === 'failed') {
+    await setAccountRuntimeHealth(account.id, {
       state: 'unhealthy',
       reason: result.message || '\u7b7e\u5230\u5931\u8d25',
       source: 'checkin',
@@ -336,11 +400,24 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
     ...result,
     success: effectiveSuccess,
     status: normalizedStatus,
+    ...(logMessage ? { message: logMessage } : {}),
+    ...(logReward ? { reward: logReward } : {}),
+    ...(refreshedBalanceInfo ? { balanceInfo: refreshedBalanceInfo } : {}),
     ...(normalizedStatus === 'skipped' ? { skipped: true } : {}),
   };
 }
 
-export async function checkinAll(options?: { accountIds?: number[]; scheduleMode?: 'cron' | 'interval' }) {
+export function checkinAccount(
+  accountId: number,
+  options?: { skipEvent?: boolean; scheduleMode?: 'cron' | 'interval' },
+) {
+  return withAccountBrowserProfileLease(
+    accountId,
+    () => checkinAccountUnlocked(accountId, options),
+  );
+}
+
+export async function checkinAll(options?: CheckinAllOptions) {
   const rows = await db
     .select()
     .from(schema.accounts)
@@ -354,31 +431,31 @@ export async function checkinAll(options?: { accountIds?: number[]; scheduleMode
     .all();
 
   const scopedAccountIds = options?.accountIds ? new Set(options.accountIds) : null;
+  const selectedRows = scopedAccountIds
+    ? rows.filter((row) => scopedAccountIds.has(row.accounts.id))
+    : rows;
   const results: Array<{ accountId: number; username: string | null; site: string; result: any }> = [];
 
-  const grouped = new Map<number, typeof rows>();
-  for (const row of rows) {
-    if (scopedAccountIds && !scopedAccountIds.has(row.accounts.id)) continue;
-    const siteId = row.sites.id;
-    if (!grouped.has(siteId)) grouped.set(siteId, []);
-    grouped.get(siteId)!.push(row);
+  for (const row of selectedRows) {
+    const result = await checkinAccount(row.accounts.id, {
+      skipEvent: true,
+      scheduleMode: options?.scheduleMode,
+    });
+    const item = {
+      accountId: row.accounts.id,
+      username: row.accounts.username,
+      site: row.sites.name,
+      result,
+    };
+    results.push(item);
+    try {
+      options?.onProgress?.({
+        completed: results.length,
+        total: selectedRows.length,
+        ...item,
+      });
+    } catch {}
   }
 
-  const promises = Array.from(grouped.entries()).map(async ([_, siteRows]) => {
-    for (const row of siteRows) {
-      const r = await checkinAccount(row.accounts.id, {
-        skipEvent: true,
-        scheduleMode: options?.scheduleMode,
-      });
-      results.push({
-        accountId: row.accounts.id,
-        username: row.accounts.username,
-        site: row.sites.name,
-        result: r,
-      });
-    }
-  });
-
-  await Promise.all(promises);
   return results;
 }

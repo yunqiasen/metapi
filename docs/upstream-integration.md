@@ -72,7 +72,7 @@ New API 支持三种凭证类型：
 - **填写方式：**
   - 用户名：`your-username`
   - 密码：`your-password`
-- **自动获取：** 系统自动登录并获取 Access Token 和账号令牌
+- **自动获取：** 系统通过协议接口登录并获取 Access Token 和账号令牌；不会启动浏览器，也不会创建浏览器 Profile
 
 ##### 2. Access Token / Session Cookie
 
@@ -103,7 +103,15 @@ New API 支持三种凭证类型：
 
 如果以上方法都不能获取到 ID，则需要用户手动获取。
 
-**防护盾穿透：** 自动处理阿里云盾 / Cloudflare 等 JS 挑战（`acw_sc__v2` / `cdn_sec_tc`），无需手动配置。
+**签到规则：** 有实体 Profile 的 AnyRouter / AgentRouter 账号继续使用真实浏览器流程，并以 `/api/user/self` 的总额度差确认到账。账号密码添加的账号没有 Profile，签到只走协议接口；Session 失效时也只用保存的密码做协议重登，不会创建浏览器 Profile。协议不支持或失败时返回真实结果。浏览器流程仍只有总额度真实增加才返回成功；HTTP 200、OAuth 完成或额度不变都不会生成成功记录。
+
+**防护盾与第三方登录：** AnyRouter 使用按会话隔离的 CloakBrowser 持久 Profile；AgentRouter 使用系统 Chromium 持久 Profile，并在 `/api/user/self` 返回阿里云 WAF 页面时切到顶层页面完成滑块，再回到 `/console` 读取实时 JSON。Metapi 只对真实 `/api/status` 做一次尽力预热；拿到真实 JSON 就继续，遇到挑战页、403 或超时也会保留浏览器并打开真实登录页，不再把 WAF 预热当成启动硬门禁。不会伪造 OAuth state，也不会跨浏览器复用 WAF Cookie。AnyRouter 的 GitHub / LinuxDO 入口位于注册页。点击后必须由目标站 `/api/oauth/state` 生成服务端 state，再跳转第三方授权页。遇到 LinuxDO hCaptcha 时，直接在 noVNC 远程窗口用真实鼠标完成验证。
+
+**Profile 边界：** AnyRouter / AgentRouter 用账号密码添加时只做协议登录，保存 Session、用户 ID、API Token 和加密密码，不启动浏览器，也不写 `managedBrowserProfile`。实体 Profile 只来自用户主动打开的真实站点登录/OAuth 窗口，或 AgentRouter F12 Session 的隔离浏览器验证。刷新凭证和签到不会用保存的密码偷偷补建 Profile。
+
+**AgentRouter F12 Session：** 普通 Token 校验若在 10 秒内没有响应，Metapi 会在隔离的系统 Chromium Profile 中把粘贴的 Session 值作为目标站 Cookie 注入，读取真实 `/api/user/self` 并核对 User ID。仅验证时临时 Profile 会删除；点击“添加连接”后会把验证通过的 Profile 原子保存到账号目录，因此后续刷新凭证、余额和签到共用同一登录态。
+
+浏览器会话关闭、导入成功或启动失败后，临时 Profile 会删除。账号 Profile 仅保留数据库中仍存在的连接账号；Docker 使用 init 进程回收 Chromium 子进程，服务重载时也会清理遗留浏览器进程。
 
 ---
 
@@ -696,3 +704,30 @@ Metapi 会定期抓取已接入站点的公告，并在首次发现时写入站�
 - 站点禁用后，关联的所有账号和路由通道会自动禁用
 - 删除站点会级联删除所有关联账号、Token 和路由配置，请谨慎操作
 - 如果你看到站点创建成功后的“官方预设”提示，请按它建议的下一步走，一般会更省事
+
+## AnyRouter 签到语义
+
+AnyRouter 的适配器声明 `browser-visit`，但实际按账号分流：有实体持久 Profile 的账号锁定并复制 Profile，打开真实站点，Session 失效时只使用 LinuxDO/GitHub Profile 恢复登录；没有 Profile 的账号密码连接直接走协议 `adapter.checkin()`，Session 失效时只做协议重登，不启动浏览器。浏览器路径随后在同一页面上下文中读取 `/api/user/self`，携带真实 Cookie、`New-API-User` 和 `X-Requested-With` 调用 `POST /api/user/sign_in`，再轮询同账号 `/api/user/self`。
+
+成功条件只有一个：**总额度正向增加**。期间用量可能增加，所以剩余额度不是奖励基线。HTML/WAF、账号不一致、额度字段缺失、站点仅返回“已签到”或总额度不变，都不会推进 `lastCheckinAt`。当天已领取且额度不变时，接口返回 `success=false、status=skipped`，不写奖励；但会保留已验证的新 Session/Profile、当前余额，并把已恢复的过期账号状态写回 `active`。AnyRouter 使用账号/通用浏览器代理，绝不继承 AgentRouter 专用固定出口。
+
+Docker Compose 内置 `browser-proxy` 服务并挂载 `data/browser-proxy/config.yaml`。AgentRouter 使用 `AGENTROUTER_BROWSER_PROXY_URL=http://metapi-browser-proxy:7891` 固定出口；AnyRouter 使用账号 `proxyUrl` 或 `SITE_AUTH_BROWSER_PROXY_URL` 的通用分流出口。Mihomo 选择状态保存在 `browser_proxy_state`，容器重建或重启后仍保持原出口。
+
+## AgentRouter 签到语义
+
+AgentRouter 的 `browser-reauth` 只用于拥有实体持久 Profile 的账号。账号密码连接没有 Profile 时只尝试协议签到和协议重登；如果站点不提供标准签到接口，就返回真实的失败/跳过结果，不创建 Profile。对 Profile 账号，有效目标站 Session 的首次浏览器 `/api/user/self` 本身会触发每日签到，因此专用流程先把该实时响应的总额度与数据库旧额度比较：一旦出现正向增量，立即提交同账号 Profile/Session、同步余额并返回真实奖励，不再继续 logout/OAuth。同一天再次点击也必须访问目标站；实时额度可信时返回 `skipped` 并恢复账号状态，不读取数据库额度冒充结果，也不重复 logout/OAuth。
+
+只有首次 self 没有带来额度增量时，才执行 OAuth 兜底：
+
+- 复制账号持久 Profile，明确发现错账号时立即终止；
+- 退出目标站并确认 `/api/user/self` 已匿名；
+- 复用 Profile 中的 LinuxDO/GitHub 登录态完成真实站点 OAuth；
+- 校验 OAuth 回调和登录后用户 ID 均为原 `platformUserId`；
+- 校验通过后提交 Profile、新 Session 和浏览器余额，失败则丢弃副本；
+- 即使 OAuth 回调返回 `checked_in=true`，总额度没有正向增量仍是失败/未确认，不产生奖励。
+
+历史账号应把登录来源保存到 `extraConfig.managedBrowserProfile.loginProvider`。仅 `linuxdo_<id>` 与 `github_<id>` 用户名允许一次兼容推断。持久 Profile 会保存固定浏览器 fingerprint 元数据，避免每次启动换设备指纹导致挑战 Cookie 失效。`provider_session_expired` 表示第三方登录态已失效；`provider_challenge_required` 表示 LinuxDO 要求在当前 noVNC 窗口完成人机验证。
+
+Accounts 页面只使用后端任务终态返回的真实 `reward` 和最新 `balanceInfo`。任务结束后直接回填余额、已用、总额度、账号状态和运行健康，不再追加一次容易超时的余额快照请求；同一行同步加锁，连续点击只提交一个任务。今日奖励汇总只解析明确的奖励/增量文本，不会把“当前总额度 850”误算成“奖励 850”。账号表、签到日志和 UI 因此使用同一份额度真值。
+
+AgentRouter 的 `/api/user/self` 偶尔会针对 Node/undici 返回 HTML 页面。Metapi 会归一化为 `upstream_html_response`，并仅在该平台用原生 curl 重试；Session、用户 ID 和代理配置通过 stdin 传入，不出现在进程参数中。如果容器网络出口用 curl 仍得到 HTML，系统会锁定该账号 Profile，在临时副本中用系统 Chromium 读取余额。遇到阿里云 WAF 时会顶层完成滑块、回到控制台再读实时数据；随后关闭浏览器并删除副本，不会再次触发 OAuth 签到。

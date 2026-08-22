@@ -22,6 +22,7 @@ const CHECKIN_INVALID_URL_FORBIDDEN_SESSION_TOKEN = 'checkin-invalid-url-forbidd
 const CHECKIN_CLOUDFLARE_530_TOKEN = 'checkin-cloudflare-530-token';
 const BALANCE_FAIL_TOKEN = 'balance-fail-token';
 const BALANCE_SHIELD_FAILURE_TOKEN = 'balance-shield-failure-token';
+const BALANCE_HTML_TOKEN = 'balance-html-token';
 const GROUP_EXPIRED_TOKEN = 'group-expired-token';
 const SHIELD_LOGIN_USERNAME = 'shield-user';
 const SHIELD_LOGIN_PASSWORD = 'shield-pass';
@@ -299,6 +300,15 @@ describe('NewApiAdapter', () => {
       }
 
       if (req.url === '/api/user/self') {
+        if (
+          req.headers.authorization === `Bearer ${BALANCE_HTML_TOKEN}`
+          || (typeof req.headers.cookie === 'string' && req.headers.cookie.includes(BALANCE_HTML_TOKEN))
+        ) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<!doctype html><html><head><title>Agent Router</title></head><body>login shell</body></html>');
+          return;
+        }
+
         if (typeof req.headers.authorization === 'string' && req.headers.authorization === `Bearer ${BALANCE_SHIELD_FAILURE_TOKEN}`) {
           res.writeHead(200, {
             'Content-Type': 'text/html; charset=utf-8',
@@ -815,6 +825,14 @@ describe('NewApiAdapter', () => {
     expect(
       requests.some((r) => r.url === '/api/user/checkin' && r.headers['new-api-user'] === '131936'),
     ).toBe(true);
+  });
+
+
+  it('classifies HTML returned by a JSON balance endpoint without exposing parser text', async () => {
+    const adapter = new NewApiAdapter();
+
+    await expect(adapter.getBalance(baseUrl, BALANCE_HTML_TOKEN, 59260)).rejects
+      .toThrow('upstream_html_response');
   });
 
   it('preserves upstream balance failure message for UI feedback', async () => {

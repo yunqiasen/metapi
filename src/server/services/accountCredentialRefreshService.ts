@@ -1,13 +1,15 @@
 import { asc, eq } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { decryptAccountPassword } from './accountCredentialService.js';
-import { getAutoReloginConfig, resolvePlatformUserId, resolveProxyUrlFromExtraConfig } from './accountExtraConfig.js';
+import { getAutoReloginConfig, mergeAccountExtraConfig, resolvePlatformUserId, resolveProxyUrlFromExtraConfig } from './accountExtraConfig.js';
 import {
-  isManagedBrowserLoginSite,
+  hasStoredAccountBrowserProfile,
   refreshManagedAccountLogin,
 } from './accountManagedBrowserLogin.js';
 import { getAdapter } from './platforms/index.js';
 import { withAccountProxyOverride } from './siteProxy.js';
+import { withAccountBrowserProfileLease } from './accountBrowserProfileLease.js';
+import { refreshBalance } from './balanceService.js';
 
 export type AccountCredentialRefreshStatus = 'success' | 'skipped' | 'failed';
 
@@ -49,6 +51,10 @@ function summarize(
   };
 }
 
+function isShieldChallengeMessage(message: unknown): boolean {
+  return typeof message === 'string' && /shield challenge|cloudflare|captcha|人机|验证|blocked login/i.test(message);
+}
+
 async function refreshBySavedPassword(
   account: typeof schema.accounts.$inferSelect,
   site: typeof schema.sites.$inferSelect,
@@ -79,7 +85,9 @@ async function refreshBySavedPassword(
       accountId: account.id,
       status: 'failed',
       refreshed: false,
-      message: loginResult.message || '账号密码重新登录失败',
+      message: isShieldChallengeMessage(loginResult.message)
+        ? '直连登录被盾拦截。请用真实站点登录窗口重新保存 Profile'
+        : loginResult.message || '账号密码重新登录失败',
     };
   }
 
@@ -121,15 +129,22 @@ async function refreshAccountCredentialRow(
 ): Promise<AccountCredentialRefreshResult> {
   const { account, site } = row;
 
-  if (isManagedBrowserLoginSite(site)) {
+  if (hasStoredAccountBrowserProfile(account)) {
     try {
       const refreshed = await refreshManagedAccountLogin(account, site);
       if (refreshed) {
+        let message = '凭证已刷新';
+        if (String(site.platform || '').trim().toLowerCase() === 'agentrouter') {
+          const balance = await refreshBalance(account.id).catch(() => null);
+          if (balance?.observedCheckinMessage) {
+            message = `${message}；${balance.observedCheckinMessage}`;
+          }
+        }
         return {
           accountId: account.id,
           status: 'success',
           refreshed: true,
-          message: '凭证已刷新',
+          message,
         };
       }
     } catch {}
@@ -151,8 +166,8 @@ async function refreshAccountCredentialRow(
     accountId: account.id,
     status: 'skipped',
     refreshed: false,
-    message: isManagedBrowserLoginSite(site)
-      ? '浏览器 Profile 登录态不可用，且没有保存账号密码，请重新授权或重新登录刷新凭证'
+    message: getAutoReloginConfig(account.extraConfig)
+      ? '凭证刷新失败：保存的账号密码协议登录未通过，或浏览器 Profile 不存在；请用真实站点登录窗口重新保存 Profile'
       : '该账号没有保存账号密码，暂不支持自动刷新凭证',
   };
 }
@@ -160,23 +175,25 @@ async function refreshAccountCredentialRow(
 export async function refreshAccountCredential(
   accountId: number,
 ): Promise<AccountCredentialRefreshResult> {
-  const row = await db
-    .select({ account: schema.accounts, site: schema.sites })
-    .from(schema.accounts)
-    .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
-    .where(eq(schema.accounts.id, accountId))
-    .get();
+  return withAccountBrowserProfileLease(accountId, async () => {
+    const row = await db
+      .select({ account: schema.accounts, site: schema.sites })
+      .from(schema.accounts)
+      .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
+      .where(eq(schema.accounts.id, accountId))
+      .get();
 
-  if (!row) {
-    return {
-      accountId,
-      status: 'failed',
-      refreshed: false,
-      message: '账号不存在',
-    };
-  }
+    if (!row) {
+      return {
+        accountId,
+        status: 'failed',
+        refreshed: false,
+        message: '账号不存在',
+      };
+    }
 
-  return refreshAccountCredentialRow(row);
+    return refreshAccountCredentialRow(row);
+  });
 }
 
 export async function refreshAllAccountCredentials(): Promise<
@@ -191,7 +208,7 @@ export async function refreshAllAccountCredentials(): Promise<
 
   const results: AccountCredentialRefreshResult[] = [];
   for (const row of rows) {
-    results.push(await refreshAccountCredentialRow(row));
+    results.push(await refreshAccountCredential(row.account.id));
   }
 
   return summarize(results);

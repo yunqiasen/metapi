@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,6 +13,8 @@ const getUserInfoMock = vi.fn();
 const targetBrowserSessionMock = vi.hoisted(() => ({
   captureTargetSiteBrowserScreenshot: vi.fn(),
   closeTargetSiteBrowserSession: vi.fn(),
+  commitTargetSiteBrowserProfile: vi.fn(),
+  confirmTargetSiteBrowserCaptcha: vi.fn(),
   getTargetSiteBrowserSession: vi.fn(),
   markTargetSiteBrowserSessionSaved: vi.fn(),
   persistTargetSiteBrowserProfile: vi.fn(),
@@ -34,9 +36,12 @@ vi.mock('../../services/platforms/index.js', () => ({
   }),
 }));
 
-vi.mock('../../services/site-auth/targetSiteBrowserSession.js', () => ({
+vi.mock('../../services/site-auth/targetSiteBrowserSession.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../services/site-auth/targetSiteBrowserSession.js')>(),
   captureTargetSiteBrowserScreenshot: targetBrowserSessionMock.captureTargetSiteBrowserScreenshot,
   closeTargetSiteBrowserSession: targetBrowserSessionMock.closeTargetSiteBrowserSession,
+  commitTargetSiteBrowserProfile: targetBrowserSessionMock.commitTargetSiteBrowserProfile,
+  confirmTargetSiteBrowserCaptcha: targetBrowserSessionMock.confirmTargetSiteBrowserCaptcha,
   getTargetSiteBrowserSession: targetBrowserSessionMock.getTargetSiteBrowserSession,
   markTargetSiteBrowserSessionSaved: targetBrowserSessionMock.markTargetSiteBrowserSessionSaved,
   persistTargetSiteBrowserProfile: targetBrowserSessionMock.persistTargetSiteBrowserProfile,
@@ -49,6 +54,12 @@ vi.mock('../../services/site-auth/targetSiteBrowserSession.js', () => ({
 
 type DbModule = typeof import('../../db/index.js');
 type VaultModule = typeof import('../../services/site-auth/credentialVault.js');
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
+}
 
 describe('accounts site auth login', () => {
   let app: FastifyInstance;
@@ -84,6 +95,11 @@ describe('accounts site auth login', () => {
     for (const mock of Object.values(targetBrowserSessionMock)) {
       mock.mockReset();
     }
+    targetBrowserSessionMock.commitTargetSiteBrowserProfile.mockResolvedValue({
+      profileDir: '/profiles/committed',
+      rollback: vi.fn(async () => {}),
+      finalize: vi.fn(async () => {}),
+    });
 
     await db.delete(schema.proxyLogs).run();
     await db.delete(schema.checkinLogs).run();
@@ -97,18 +113,22 @@ describe('accounts site auth login', () => {
     await db.delete(schema.sites).run();
   });
 
-  it('starts a target-site browser login without requiring a saved GitHub credential', async () => {
+  it('starts an isolated target-site browser login without requiring a saved GitHub credential', async () => {
     const site = await db.insert(schema.sites).values({
       name: 'GitHub Target',
       url: 'https://target.example.com',
       platform: 'new-api',
       status: 'active',
     }).returning().get();
-    startExternalBrowserLoginMock.mockResolvedValueOnce({
-      sourceProvider: 'github',
-      authorizationUrl: 'https://target.example.com/login',
+    targetBrowserSessionMock.startTargetSiteBrowserSession.mockResolvedValueOnce({
+      state: 'target-state-direct',
+      siteId: site.id,
+      authorizationUrl: 'http://localhost/site-auth/target-browser/target-state-direct',
       targetSiteUrl: 'https://target.example.com',
-      completionMode: 'target_site_session',
+      loginUrl: 'https://target.example.com/login',
+      viewUrl: 'http://localhost/site-auth/target-browser/target-state-direct',
+      noVncUrl: 'http://localhost:6080/vnc.html',
+      status: 'pending',
     });
 
     const response = await app.inject({
@@ -121,18 +141,232 @@ describe('accounts site auth login', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(startExternalBrowserLoginMock).toHaveBeenCalledWith('https://target.example.com', {
-      sourceProvider: 'github',
-    });
+    expect(targetBrowserSessionMock.startTargetSiteBrowserSession).toHaveBeenCalledWith(expect.objectContaining({
+      siteId: site.id,
+      credentialPayload: {},
+      targetSiteUrl: 'https://target.example.com',
+      autoAdvanceProvider: false,
+    }));
+    expect(startExternalBrowserLoginMock).not.toHaveBeenCalled();
     expect(response.json()).toMatchObject({
       success: true,
       siteId: site.id,
-      provider: 'github',
-      authorizationUrl: 'https://target.example.com/login',
+      authorizationUrl: 'http://localhost/site-auth/target-browser/target-state-direct',
       instructions: {
         mode: 'target_site_browser_login',
+        source: 'managed_target_profile',
       },
     });
+  });
+
+  it('opens AgentRouter additions on the register page where OAuth controls exist', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'AgentRouter',
+      url: 'https://agentrouter.org',
+      platform: 'agentrouter',
+      status: 'active',
+    }).returning().get();
+    targetBrowserSessionMock.startTargetSiteBrowserSession.mockResolvedValueOnce({
+      state: 'target-state-agent-add',
+      siteId: site.id,
+      authorizationUrl: 'http://localhost/site-auth/target-browser/target-state-agent-add',
+      targetSiteUrl: site.url,
+      loginUrl: 'https://agentrouter.org/register',
+      viewUrl: 'http://localhost/site-auth/target-browser/target-state-agent-add',
+      noVncUrl: 'http://localhost:6080/vnc.html',
+      status: 'pending',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/site-auth-browser-login/start',
+      payload: { siteId: site.id },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(targetBrowserSessionMock.startTargetSiteBrowserSession).toHaveBeenCalledWith(expect.objectContaining({
+      siteId: site.id,
+      loginUrl: 'https://agentrouter.org/register',
+      autoAdvanceProvider: false,
+    }));
+  });
+
+  it('starts Profile rebind from a copy of the original account Profile', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'AgentRouter',
+      url: 'https://agentrouter.org',
+      platform: 'agentrouter',
+      status: 'active',
+    }).returning().get();
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id,
+      username: 'linuxdo_59260',
+      accessToken: 'session=expired',
+      status: 'expired',
+      extraConfig: JSON.stringify({
+        credentialMode: 'session',
+        platformUserId: 59260,
+        managedBrowserProfile: { enabled: true, loginProvider: 'linuxdo' },
+      }),
+    }).returning().get();
+    const sourceProfileDir = join(dataDir, 'browser-profiles', 'accounts', 'agentrouter', String(account.id));
+    mkdirSync(join(sourceProfileDir, 'Default'), { recursive: true });
+    targetBrowserSessionMock.startTargetSiteBrowserSession.mockResolvedValueOnce({
+      state: 'target-state-agent-rebind',
+      siteId: site.id,
+      accountId: account.id,
+      authorizationUrl: 'http://localhost/site-auth/target-browser/target-state-agent-rebind',
+      targetSiteUrl: site.url,
+      loginUrl: 'https://agentrouter.org/register',
+      viewUrl: 'http://localhost/site-auth/target-browser/target-state-agent-rebind',
+      noVncUrl: 'http://localhost:6080/vnc.html',
+      status: 'pending',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/site-auth-browser-login/start',
+      payload: { siteId: site.id, accountId: account.id },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(targetBrowserSessionMock.startTargetSiteBrowserSession).toHaveBeenCalledWith(expect.objectContaining({
+      siteId: site.id,
+      accountId: account.id,
+      sourceProfileDir,
+      loginUrl: 'https://agentrouter.org/register',
+      autoAdvanceProvider: false,
+    }));
+    expect(response.json()).toMatchObject({
+      success: true,
+      accountId: account.id,
+      instructions: { source: 'managed_target_profile_rebind' },
+    });
+  });
+
+  it('rebinds the original account from the completed browser Profile without dropping metadata', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'AgentRouter',
+      url: 'https://agentrouter.org',
+      platform: 'agentrouter',
+      status: 'active',
+    }).returning().get();
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id,
+      username: 'linuxdo_59260',
+      accessToken: 'session=expired',
+      status: 'expired',
+      extraConfig: JSON.stringify({
+        credentialMode: 'session',
+        platformUserId: 59260,
+        proxyUrl: 'http://account-proxy:7890',
+        managedBrowserProfile: {
+          enabled: true,
+          provider: 'agentrouter',
+          loginProvider: 'linuxdo',
+          profileDir: '/profiles/old',
+          proxyUrl: 'http://profile-proxy:7891',
+        },
+      }),
+    }).returning().get();
+    const session = {
+      state: 'target-state-agent-rebind-save',
+      siteId: site.id,
+      accountId: account.id,
+      targetSiteUrl: site.url,
+      loginUrl: 'https://agentrouter.org/register',
+      viewUrl: 'http://metapi.local/site-auth/target-browser/target-state-agent-rebind-save',
+      status: 'pending',
+      currentUrl: 'https://agentrouter.org/console',
+    };
+    targetBrowserSessionMock.getTargetSiteBrowserSession.mockReturnValue(session);
+    targetBrowserSessionMock.readTargetSiteBrowserSessionAccessToken.mockResolvedValue({
+      ...session,
+      accessToken: 'session=fresh-agent',
+    });
+    targetBrowserSessionMock.readTargetSiteBrowserSessionUserInfo.mockResolvedValue({
+      username: 'linuxdo_59260',
+      platformUserId: 59260,
+    });
+    targetBrowserSessionMock.markTargetSiteBrowserSessionSaved.mockResolvedValue({ ...session, status: 'success' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/accounts/${account.id}/rebind-browser-profile`,
+      payload: { state: session.state },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const profileDir = join(dataDir, 'browser-profiles', 'accounts', 'agentrouter', String(account.id));
+    expect(targetBrowserSessionMock.commitTargetSiteBrowserProfile).toHaveBeenCalledWith(session.state, profileDir);
+    expect(targetBrowserSessionMock.markTargetSiteBrowserSessionSaved).toHaveBeenCalledWith(session.state);
+    const updated = await db.select().from(schema.accounts).where((await import('drizzle-orm')).eq(schema.accounts.id, account.id)).get();
+    expect(updated).toMatchObject({
+      id: account.id,
+      accessToken: 'session=fresh-agent',
+      username: 'linuxdo_59260',
+      status: 'active',
+    });
+    expect(JSON.parse(updated?.extraConfig || '{}')).toMatchObject({
+      credentialMode: 'session',
+      platformUserId: 59260,
+      proxyUrl: 'http://account-proxy:7890',
+      managedBrowserProfile: {
+        enabled: true,
+        provider: 'agentrouter',
+        loginProvider: 'linuxdo',
+        profileDir,
+        proxyUrl: 'http://profile-proxy:7891',
+        createdFrom: 'target-site-browser-rebind',
+      },
+    });
+  });
+
+  it('rejects a browser Profile rebind when the target user differs from the original account', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'AgentRouter',
+      url: 'https://agentrouter.org',
+      platform: 'agentrouter',
+      status: 'active',
+    }).returning().get();
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id,
+      username: 'linuxdo_59260',
+      accessToken: 'session=expired',
+      status: 'expired',
+      extraConfig: JSON.stringify({ platformUserId: 59260 }),
+    }).returning().get();
+    const session = {
+      state: 'target-state-agent-wrong-account',
+      siteId: site.id,
+      accountId: account.id,
+      targetSiteUrl: site.url,
+      loginUrl: 'https://agentrouter.org/register',
+      viewUrl: 'http://metapi.local/site-auth/target-browser/target-state-agent-wrong-account',
+      status: 'pending',
+    };
+    targetBrowserSessionMock.getTargetSiteBrowserSession.mockReturnValue(session);
+    targetBrowserSessionMock.readTargetSiteBrowserSessionAccessToken.mockResolvedValue({
+      ...session,
+      accessToken: 'session=wrong-user',
+    });
+    targetBrowserSessionMock.readTargetSiteBrowserSessionUserInfo.mockResolvedValue({
+      username: 'github_99999',
+      platformUserId: 99999,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/accounts/${account.id}/rebind-browser-profile`,
+      payload: { state: session.state },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ success: false, message: '浏览器登录账号与原连接不一致' });
+    expect(targetBrowserSessionMock.commitTargetSiteBrowserProfile).not.toHaveBeenCalled();
+    const unchanged = await db.select().from(schema.accounts).get();
+    expect(unchanged?.accessToken).toBe('session=expired');
+    expect(unchanged?.status).toBe('expired');
   });
 
   afterAll(async () => {
@@ -282,7 +516,7 @@ describe('accounts site auth login', () => {
     expect(targetBrowserSessionMock.markTargetSiteBrowserSessionSaved).toHaveBeenCalledWith('target-state-1');
     expect(targetBrowserSessionMock.persistTargetSiteBrowserProfile).toHaveBeenCalledWith(
       'target-state-1',
-      expect.stringContaining('/browser-profiles/accounts/new-api/'),
+      expect.stringContaining('/browser-profiles/accounts/target-example-com/'),
     );
 
     const accounts = await db.select().from(schema.accounts).all();
@@ -305,6 +539,64 @@ describe('accounts site auth login', () => {
       tokenType: 'session',
       credentialMode: 'session',
       verificationPending: true,
+    });
+  });
+
+  it('persists a verified target Profile before starting account initialization', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'AnyRouter',
+      url: 'https://anyrouter.top',
+      platform: 'anyrouter',
+      status: 'active',
+    }).returning().get();
+    const session = {
+      state: 'target-state-profile-before-init',
+      siteId: site.id,
+      provider: 'linuxdo',
+      targetSiteUrl: site.url,
+      loginUrl: `${site.url}/login`,
+      viewUrl: 'http://metapi.local/site-auth/target-browser/target-state-profile-before-init',
+      status: 'pending',
+      currentUrl: `${site.url}/console`,
+    };
+    const profilePersisted = deferred();
+    targetBrowserSessionMock.getTargetSiteBrowserSession.mockReturnValue(session);
+    targetBrowserSessionMock.readTargetSiteBrowserSessionAccessToken.mockResolvedValue({
+      ...session,
+      accessToken: 'session=verified-target-session',
+    });
+    targetBrowserSessionMock.persistTargetSiteBrowserProfile.mockImplementationOnce(
+      () => profilePersisted.promise,
+    );
+    targetBrowserSessionMock.markTargetSiteBrowserSessionSaved.mockResolvedValue({
+      ...session,
+      status: 'success',
+    });
+    verifyTokenMock.mockResolvedValueOnce({
+      tokenType: 'session',
+      userInfo: { username: 'linuxdo_200029' },
+      apiToken: 'sk-anyrouter',
+    });
+
+    const responsePromise = app.inject({
+      method: 'POST',
+      url: '/api/accounts/site-auth-browser-sessions/target-state-profile-before-init/save?auto=1',
+    });
+
+    await vi.waitFor(() => {
+      expect(targetBrowserSessionMock.persistTargetSiteBrowserProfile).toHaveBeenCalledTimes(1);
+    });
+    expect(getApiTokensMock).not.toHaveBeenCalled();
+
+    profilePersisted.resolve();
+    const response = await responsePromise;
+    expect(response.statusCode).toBe(200);
+    await vi.waitFor(() => {
+      expect(getApiTokensMock).toHaveBeenCalledWith(
+        site.url,
+        'session=verified-target-session',
+        200029,
+      );
     });
   });
 
@@ -433,6 +725,23 @@ describe('accounts site auth login', () => {
     expect(targetBrowserSessionMock.markTargetSiteBrowserSessionSaved).not.toHaveBeenCalled();
   });
 
+  it('confirms a completed LinuxDO captcha through trusted browser input', async () => {
+    targetBrowserSessionMock.confirmTargetSiteBrowserCaptcha.mockResolvedValueOnce({
+      clicked: true,
+      reason: 'clicked',
+      buttonText: 'Verify',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/site-auth-browser-sessions/target-state-captcha/confirm-captcha',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(targetBrowserSessionMock.confirmTargetSiteBrowserCaptcha).toHaveBeenCalledWith('target-state-captcha');
+    expect(response.json()).toMatchObject({ success: true, clicked: true, reason: 'clicked' });
+  });
+
   it('keeps Any/Agent extraction pending until the browser verifies the target user', async () => {
     const site = await db.insert(schema.sites).values({
       name: 'Any Target',
@@ -517,7 +826,7 @@ describe('accounts site auth login', () => {
     });
     expect(targetBrowserSessionMock.persistTargetSiteBrowserProfile).toHaveBeenCalledWith(
       'target-state-3',
-      expect.stringContaining('/browser-profiles/accounts/new-api/'),
+      expect.stringContaining('/browser-profiles/accounts/target-example-com/'),
     );
     expect(response.json()).toMatchObject({
       tokenType: 'session',

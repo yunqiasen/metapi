@@ -310,4 +310,25 @@ describe('siteProxy', () => {
 
     expect('dispatcher' in result).toBe(false);
   });
+
+  it('adds an aborting signal to requests inside a bounded site-request operation', async () => {
+    const siteProxyModule = await import('./siteProxy.js');
+    const withSiteRequestTimeout = (siteProxyModule as typeof siteProxyModule & {
+      withSiteRequestTimeout?: <T>(timeoutMs: number, fn: () => Promise<T>) => Promise<T>;
+    }).withSiteRequestTimeout;
+
+    expect(typeof withSiteRequestTimeout).toBe('function');
+    if (!withSiteRequestTimeout) return;
+
+    const requestInit = await withSiteRequestTimeout(10, () => (
+      siteProxyModule.withSiteProxyRequestInit('https://deadline-site.example.com/api/user/self', {
+        method: 'GET',
+      })
+    ));
+
+    expect(requestInit.signal).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(requestInit.signal?.aborted).toBe(true);
+  });
+
 });

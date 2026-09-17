@@ -1,0 +1,11 @@
+[Unit]
+Description=Metapi verified encrypted database and configuration backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.config/metapi
+ExecStart=%h/.local/bin/metapictl backup daily
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true

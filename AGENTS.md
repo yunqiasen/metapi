@@ -74,12 +74,17 @@ make small, consistent changes without re-learning the codebase each time.
   by git and should not be treated as published documentation.
 
 
-## Local 4010 Deployment Boundary
+## Frok2 / Production Boundary
 
-- This worktree is the intended main-based local-repairs deployment for port 4010.
-- Preserve the existing uncommitted main repairs. Do not replace this worktree with pure upstream or the abandoned `../metapi` Fork.
-- Build only via this worktree's `scripts/deploy/build-main-repairs.sh`; verify `main-repairs-manifest.json` and `main-repairs-guard.mjs` before deployment.
-- Keep `docker-compose.main.yml` pointed at the verified main-repairs image. Never copy dist from a different worktree or restore an older production database over current data.
-- Keep account Session, third-party relogin Cookie, user ID, and encryption secrets intact. No browser Profile, Chromium, or noVNC is needed for this deployment.
-- No commit, push, removal of the abandoned Fork, or cleanup of unrelated projects unless the user explicitly requests it.
-- Restoration evidence and exact source/image/data mapping: `docs/main-repairs-restoration.md`.
+- The single source directory is `/home/div/1_Project_dir/Project/metapi`.
+- `main` is unmodified upstream history. `Frok2` contains the preserved main-based repairs and maintenance tooling. Never merge the archived `Metapi-fork` into it.
+- Before any deployment, check `git status`, the current commit, and `/home/div/.local/bin/metapictl status`. Git checkout changes source files, not the running image.
+- The preserved running-source baseline is tag `frok2-baseline-20260917` (`f463dc7`). Keep release tags immutable and build only verified, committed sources.
+- Build via `scripts/deploy/build-main-repairs.sh`. It exports the committed tree to a disposable directory, verifies provenance, and leaves local dist and production data alone.
+- Operate production only through `/home/div/.local/bin/metapictl`. Runtime configuration is `/home/div/.config/metapi`, outside the Git worktree; use its immutable image record rather than a floating tag or a compose file from another branch.
+- Production remains container `metapi-main`, Compose project `metapi-main-deploy`, port `4010`, data `/home/div/1_Project_dir/Project/metapi-main-deploy-data`. The data directory name is historical, not a second source checkout.
+- Preserve Session, provider Cookie, user ID, API keys and encryption secrets. Never restore an old database over live data as part of a code rollback.
+- No Chromium/Profile/noVNC or legacy Fork modules enter production. A changed database-code/schema fingerprint requires a separate migration plan.
+- Run targeted tests, the full suite with `DOTENV_CONFIG_PATH=/dev/null`, typecheck, drift-check, docs build, image guard and live read-only verification before declaring a release complete. Updating docs is part of completion.
+- Commit/push only on explicit user request. Cleanup is project-scoped; never run global Docker prune or stop unrelated services.
+- Operational instructions: `docs/frok2-maintenance.md`. Historical restoration notes are evidence, not current deployment instructions.

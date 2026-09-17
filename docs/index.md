@@ -304,3 +304,7 @@ onBeforeUnmount(() => {
 - `/` 保持为面向所有读者的公开落地页，不再承担维护说明或贡献说明的二次首页职责。
 - 维护文档站、梳理导航、补充内容地图时，请进入 [文档维护与贡献](/README)。
 - 新增 FAQ 或教程前，请先阅读 [FAQ/教程贡献规范](/community/faq-tutorial-guidelines)。
+
+## 本地 Frok2 维护
+
+4010 的版本、发布、回滚与备份统一见 [Frok2 维护手册](./frok2-maintenance.md)。

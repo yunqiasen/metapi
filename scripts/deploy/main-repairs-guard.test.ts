@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, readFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -63,5 +63,67 @@ describe('main repair deployment identity', () => {
     const result = verify(root);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('artifact list');
+  });
+});
+
+function sourceFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'metapi-source-guard-'));
+  fixtures.push(root);
+  const result = spawnSync('git', ['clone', '--quiet', '--shared', '--no-hardlinks', resolve('.'), root], { encoding: 'utf8' });
+  expect(result.status, result.stderr).toBe(0);
+  return root;
+}
+function verifySource(root: string) {
+  return spawnSync(process.execPath, [resolve('scripts/deploy/main-repairs-guard.mjs'), '--source', root], { encoding: 'utf8' });
+}
+describe('committed release sources', () => {
+  it('accepts committed repairs while ignoring local credentials', () => {
+    const root = sourceFixture();
+    writeFileSync(join(root, '.env'), 'AUTH_TOKEN=fixture-only\n');
+    const result = verifySource(root);
+    expect(result.status, result.stderr).toBe(0);
+  });
+  it('blocks uncommitted tracked repairs', () => {
+    const root = sourceFixture();
+    writeFileSync(join(root, 'src/server/services/checkinService.ts'), '// changed\nexecuteAgentRouterOauthRelogin');
+    const result = verifySource(root);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('uncommitted');
+  });
+  it('blocks untracked source files instead of packaging them silently', () => {
+    const root = sourceFixture();
+    writeFileSync(join(root, 'src/accidental-runtime.ts'), 'export const stale = true;');
+    const result = verifySource(root);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('uncommitted');
+  });
+});
+
+function exportedSource(root: string) {
+  const exported = mkdtempSync(join(tmpdir(), 'metapi-export-guard-'));
+  fixtures.push(exported);
+  const archive = spawnSync('git', ['archive', 'HEAD'], { cwd: root, maxBuffer: 64 * 1024 * 1024 });
+  expect(archive.status).toBe(0);
+  const unpack = spawnSync('tar', ['-x', '-C', exported], { input: archive.stdout });
+  expect(unpack.status).toBe(0);
+  cpSync(join(fixture(), 'dist'), join(exported, 'dist'), { recursive: true });
+  return exported;
+}
+describe('isolated Git exports', () => {
+  it('binds an exported build to the exact committed source, not a guessed revision', () => {
+    const root = sourceFixture();
+    const exported = exportedSource(root);
+    const result = spawnSync(process.execPath, [resolve('scripts/deploy/main-repairs-guard.mjs'), '--write-manifest', exported, root], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = JSON.parse(readFileSync(join(exported, 'main-repairs-manifest.json'), 'utf8'));
+    expect(manifest.sourceCommit).toBe(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim());
+  });
+  it('detects source tampering inside an export before signing its manifest', () => {
+    const root = sourceFixture();
+    const exported = exportedSource(root);
+    writeFileSync(join(exported, 'src/server/services/checkinService.ts'), 'executeAgentRouterOauthRelogin; // replaced export');
+    const result = spawnSync(process.execPath, [resolve('scripts/deploy/main-repairs-guard.mjs'), '--write-manifest', exported, root], { encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('export differs');
   });
 });

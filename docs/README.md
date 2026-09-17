@@ -63,3 +63,7 @@ npm run docs:build
 - [项目贡献流程](https://github.com/cita-777/metapi/blob/main/CONTRIBUTING.md)
 - [安全策略](https://github.com/cita-777/metapi/blob/main/SECURITY.md)
 - [行为准则](https://github.com/cita-777/metapi/blob/main/CODE_OF_CONDUCT.md)
+
+## 本地 Frok2 维护
+
+4010 的版本、发布、回滚与备份统一见 [Frok2 维护手册](./frok2-maintenance.md)。

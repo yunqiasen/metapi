@@ -93,6 +93,7 @@ export default withMermaid(
             { text: '客户端接入', link: '/client-integration' },
             { text: '管理 API', link: '/management-api' },
             { text: '运维手册', link: '/operations' },
+            { text: 'Frok2 本地维护', link: '/frok2-maintenance' },
             { text: '常见问题 FAQ', link: '/faq' },
           ],
         },

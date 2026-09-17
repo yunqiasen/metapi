@@ -26,3 +26,9 @@ docker/.env
 docs/plan/
 docs/plans/
 .ace-tool/
+
+# Generated local release records; authoritative runtime config lives outside Git.
+/.main-repairs-image
+/main-repairs-manifest.json
+/dist.rollback-*/
+/docker-compose.main.yml.bak-*

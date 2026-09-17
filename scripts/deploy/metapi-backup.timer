@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Metapi backup with seven-snapshot retention
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+Persistent=true
+Unit=metapi-backup.service
+
+[Install]
+WantedBy=timers.target

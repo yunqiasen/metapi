@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 const BASELINE = '41767a65ec8e5470a9a70f4615b47dc24949afff';
@@ -50,26 +50,39 @@ function verifySource(root) {
   if (spawnSync('git', ['merge-base', '--is-ancestor', OLD_FORK, 'HEAD'], { cwd: root }).status === 0) {
     throw new Error('legacy fork ancestry detected');
   }
+  if (execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: root, encoding: 'utf8' }).trim()) {
+    throw new Error('uncommitted files: commit the verified release before building');
+  }
   verifyProtocol(root, true);
 }
 function artifactHashes(root) {
   const dist = join(root, 'dist');
   return Object.fromEntries(filesUnder(dist).map((path) => [path, hash(readFileSync(join(dist, path)))]));
 }
-function writeManifest(root) {
-  verifySource(root);
+function writeManifest(root, gitRoot = root) {
+  verifySource(gitRoot);
+  verifyProtocol(root, true);
   verifyProtocol(root);
-  const paths = ['src', 'drizzle', 'scripts/deploy'].flatMap((dir) => filesUnder(join(root, dir)).map((path) => `${dir}/${path}`));
-  for (const path of ['package.json', 'package-lock.json', 'vite.config.ts', 'tsconfig.json', 'tsconfig.server.json', 'tsconfig.web.json']) {
-    if (existsSync(join(root, path))) paths.push(path);
+  // Every exported tracked file must match the commit, including build scripts and assets.
+  const tree = execFileSync('git', ['ls-tree', '-rz', 'HEAD'], { cwd: gitRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  const sourceFiles = {};
+  const entries = tree.split('\0').filter(Boolean).map((entry) => {
+    const separator = entry.indexOf('\t');
+    return [entry.slice(separator + 1), entry.slice(0, separator).split(' ')];
+  }).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  for (const [path, [mode, type, oid]] of entries) {
+    const target = join(root, path);
+    if (type !== 'blob' || mode === '120000' || !lstatSync(target).isFile()) throw new Error(`unsupported export entry: ${path}`);
+    const value = readFileSync(target);
+    const blob = createHash('sha1').update(`blob ${value.length}\0`).update(value).digest('hex');
+    if (blob !== oid) throw new Error(`export differs from committed source: ${path}`);
+    sourceFiles[path] = hash(value);
   }
-  paths.sort();
-  const sourceFiles = Object.fromEntries(paths.map((path) => [path, hash(readFileSync(join(root, path)))]));
   const manifest = {
     flavor: FLAVOR,
     baseline: BASELINE,
-    sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
-    sourceBranch: execFileSync('git', ['branch', '--show-current'], { cwd: root, encoding: 'utf8' }).trim(),
+    sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: gitRoot, encoding: 'utf8' }).trim(),
+    sourceBranch: execFileSync('git', ['branch', '--show-current'], { cwd: gitRoot, encoding: 'utf8' }).trim(),
     sourceTreeSha256: hash(JSON.stringify(sourceFiles)),
     createdAt: new Date().toISOString(),
     sourceFiles,
@@ -94,11 +107,11 @@ function verifyRuntime(root) {
   }
 }
 try {
-  const [mode, inputRoot] = process.argv.slice(2);
+  const [mode, inputRoot, inputGitRoot] = process.argv.slice(2);
   if (!inputRoot) throw new Error('usage: --source|--write-manifest|--runtime ROOT');
   const root = resolve(inputRoot);
   if (mode === '--source') verifySource(root);
-  else if (mode === '--write-manifest') console.log(`source snapshot: ${writeManifest(root)}`);
+  else if (mode === '--write-manifest') console.log(`source snapshot: ${writeManifest(root, inputGitRoot ? resolve(inputGitRoot) : root)}`);
   else if (mode === '--runtime') verifyRuntime(root);
   else throw new Error('unknown guard mode');
   console.log(`main-repairs guard: OK (${mode})`);

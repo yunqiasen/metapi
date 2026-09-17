@@ -1,0 +1,24 @@
+# Installed as ~/.config/metapi/compose.yml; use metapictl, independent of Git checkout.
+services:
+  metapi-main:
+    image: ${METAPI_IMAGE:?use metapictl to select a verified image ID}
+    pull_policy: never
+    container_name: metapi-main
+    init: true
+    ports:
+      - "4010:4000"
+    volumes:
+      - ${METAPI_DATA_DIR:?production data path required}:/app/data
+    env_file:
+      - ./app.env
+    environment:
+      PORT: 4000
+      DATA_DIR: /app/data
+      HOST: 0.0.0.0
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/desktop/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped

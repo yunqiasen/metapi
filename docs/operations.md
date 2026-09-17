@@ -251,7 +251,9 @@ curl -sS http://localhost:4000/v1/chat/completions \
 
 ## main 修订版恢复与部署来源
 
-4010 的恢复边界、构建脚本、镜像校验和备份见 [main 修订版恢复](./main-repairs-restoration.md)。
+4010 当前操作见 [Frok2 维护手册](./frok2-maintenance.md)。源码只有 `/home/div/1_Project_dir/Project/metapi` 一个目录；配置与数据独立于 Git 分支。
+
+以下为按日期保留的历史验收记录，旧目录、镜像及临时线路不是当前操作入口；旧备份材料集中保存在迁移加密归档。恢复经过见 [历史恢复记录](./main-repairs-restoration.md)。
 
 
 ### Any 协议签到回归（2026-09-09）

@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "skills": {
+    "ask-matt": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/ask-matt/SKILL.md",
+      "computedHash": "7c58dbc3d5f538fbff54f5f06edcff7c3da5eb79d8d04ba5b7b277c989e0304d"
+    },
+    "code-review": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/code-review/SKILL.md",
+      "computedHash": "27621aaddabc83976f0ab57ec88c0ccc3f29e383e925a8003d4399efd01efa45"
+    },
+    "codebase-design": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/codebase-design/SKILL.md",
+      "computedHash": "9c542537692acab262e5abbf719c2f512bdef239ca40b203129dca098f2b4c6e"
+    },
+    "diagnosing-bugs": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/diagnosing-bugs/SKILL.md",
+      "computedHash": "6b8e59c5a8c0511c86e0826c507ca03a87d87bce76b29c9c5c9ef8e6e680fa8f"
+    },
+    "domain-modeling": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/domain-modeling/SKILL.md",
+      "computedHash": "a11713c0ff7870efa3c331b2e273f09116158485246edc89ae5088eefd1b0b48"
+    },
+    "grill-with-docs": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/grill-with-docs/SKILL.md",
+      "computedHash": "edd90672548e0235b820f01a3b9811ed4f678b59d2cb11a061ffb661b9a35c90"
+    },
+    "grilling": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/productivity/grilling/SKILL.md",
+      "computedHash": "d5594c4d64f620d3ec6861ab640b3dc509902a25270bf396813b993b712e27f4"
+    },
+    "implement": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/implement/SKILL.md",
+      "computedHash": "ecafc0b1e14a81b59bbf14c6d321e95aede85fcc3720139086bc6a4a2ea58249"
+    },
+    "prototype": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/prototype/SKILL.md",
+      "computedHash": "d3fc74689bd993e39c44bfae510d014eecffbeec2922764b065377fd1327c0f6"
+    },
+    "tdd": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/tdd/SKILL.md",
+      "computedHash": "4c6627cb434a01e3acf3cc362854eeb0e9c89eb952b1514694023cf4b4d721d4"
+    },
+    "to-spec": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/to-spec/SKILL.md",
+      "computedHash": "fd36be7d2ab098d007c4c093ffe326d6c90f0660dc3dd9389c3f2c27ba2993c5"
+    },
+    "to-tickets": {
+      "source": "yunqiasen/asenMattPocock-SKILL",
+      "ref": "MattPocock-Fork",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/to-tickets/SKILL.md",
+      "computedHash": "643f1882e4c624b46ff536d6871ca414a82c24530943972c4ce07402a825a571"
+    }
+  }
+}

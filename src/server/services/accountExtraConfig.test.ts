@@ -225,3 +225,46 @@ describe('accountExtraConfig', () => {
     });
   });
 });
+
+describe('checkinRelogin config', () => {
+  it('reads provider and cookie from extra config', async () => {
+    const { getCheckinReloginConfig } = await import('./accountExtraConfig.js');
+    const config = getCheckinReloginConfig(
+      JSON.stringify({ checkinRelogin: { provider: 'github', cookie: 'user_session=gh' } }),
+    );
+    expect(config).toEqual({ provider: 'github', cookie: 'user_session=gh' });
+  });
+
+  it('infers provider from username when provider is missing', async () => {
+    const { getCheckinReloginConfig } = await import('./accountExtraConfig.js');
+    expect(
+      getCheckinReloginConfig(
+        JSON.stringify({ checkinRelogin: { cookie: 'ld-cookie' } }),
+        'linuxdo_59260',
+      ),
+    ).toEqual({ provider: 'linuxdo', cookie: 'ld-cookie' });
+    expect(
+      getCheckinReloginConfig(
+        JSON.stringify({ checkinRelogin: { cookie: 'gh-cookie' } }),
+        'github_166363',
+      ),
+    ).toEqual({ provider: 'github', cookie: 'gh-cookie' });
+  });
+
+  it('returns null without cookie or resolvable provider', async () => {
+    const { getCheckinReloginConfig } = await import('./accountExtraConfig.js');
+    expect(getCheckinReloginConfig(JSON.stringify({ checkinRelogin: { provider: 'github' } }))).toBeNull();
+    expect(
+      getCheckinReloginConfig(JSON.stringify({ checkinRelogin: { cookie: 'x' } }), 'plain-name'),
+    ).toBeNull();
+    expect(getCheckinReloginConfig(undefined)).toBeNull();
+  });
+
+  it('normalizes provider values', async () => {
+    const { normalizeCheckinReloginProvider } = await import('./accountExtraConfig.js');
+    expect(normalizeCheckinReloginProvider(' GitHub ')).toBe('github');
+    expect(normalizeCheckinReloginProvider('linuxdo')).toBe('linuxdo');
+    expect(normalizeCheckinReloginProvider('google')).toBeNull();
+    expect(normalizeCheckinReloginProvider(null)).toBeNull();
+  });
+});

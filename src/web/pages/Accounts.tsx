@@ -157,6 +157,8 @@ export default function Accounts() {
     refreshToken: "",
     tokenExpiresAt: "",
     proxyUrl: "",
+    checkinReloginProvider: "",
+    checkinReloginCookie: "",
   });
   const [savingEdit, setSavingEdit] = useState(false);
   const [rebindTarget, setRebindTarget] = useState<any | null>(null);
@@ -252,6 +254,8 @@ export default function Accounts() {
   );
   const isSub2ApiSelected =
     (selectedTokenSite?.platform || "").toLowerCase() === "sub2api";
+  const isAgentRouterSelected =
+    (selectedTokenSite?.platform || "").toLowerCase() === "agentrouter";
   const activeAddCredentialMode =
     activeSegment === "apikey" ? "apikey" : "session";
   const createIntentPreset = useMemo(
@@ -556,6 +560,33 @@ export default function Accounts() {
       if (successMsg) toast.success(successMsg);
     } catch (e: any) {
       toast.error(e.message || "操作失败");
+    } finally {
+      setActionLoading((s) => ({ ...s, [key]: false }));
+      void load(true);
+    }
+  };
+
+  const handleCheckin = async (accountId: number) => {
+    const key = `checkin-${accountId}`;
+    setActionLoading((s) => ({ ...s, [key]: true }));
+    try {
+      const result = await api.triggerCheckin(accountId);
+      if (result?.status === "skipped" || result?.skipped) {
+        toast.info(result?.message || "签到未产生额度变化");
+      } else if (result?.success) {
+        const rewardAmount = Number.parseFloat(
+          String(result?.reward || "").replace(/[^0-9.-]/g, ""),
+        );
+        toast.success(
+          Number.isFinite(rewardAmount) && rewardAmount > 0
+            ? `签到成功，额度 +$${rewardAmount.toFixed(2)}`
+            : result?.message || "签到成功",
+        );
+      } else {
+        toast.error(result?.message || "签到失败");
+      }
+    } catch (e: any) {
+      toast.error(e.message || "签到失败");
     } finally {
       setActionLoading((s) => ({ ...s, [key]: false }));
       void load(true);
@@ -933,7 +964,13 @@ export default function Accounts() {
 
   const openEditPanel = (account: any) => {
     const managedAuth = extractManagedSub2ApiAuth(account);
-    const proxyUrl = parseAccountExtraConfig(account)?.proxyUrl || "";
+    const parsedConfig = parseAccountExtraConfig(account);
+    const proxyUrl = parsedConfig?.proxyUrl || "";
+    const relogin = parsedConfig?.checkinRelogin || {};
+    const reloginProvider =
+      typeof relogin.provider === "string" ? relogin.provider : "";
+    const reloginCookie =
+      typeof relogin.cookie === "string" ? relogin.cookie : "";
     closeAddPanel();
     setRebindTarget(null);
     setEditingAccount(account);
@@ -951,6 +988,8 @@ export default function Accounts() {
       refreshToken: managedAuth.refreshToken,
       tokenExpiresAt: managedAuth.tokenExpiresAt,
       proxyUrl,
+      checkinReloginProvider: reloginProvider,
+      checkinReloginCookie: reloginCookie,
     });
   };
 
@@ -978,6 +1017,15 @@ export default function Accounts() {
           ? Number.parseInt(editForm.tokenExpiresAt.trim(), 10)
           : null,
         proxyUrl: editForm.proxyUrl.trim() || null,
+        ...((editingAccount?.site?.platform || "").toLowerCase() ===
+        "agentrouter"
+          ? {
+              checkinReloginProvider:
+                editForm.checkinReloginProvider || null,
+              checkinReloginCookie:
+                editForm.checkinReloginCookie.trim() || null,
+            }
+          : {}),
       });
       toast.success("账号已更新");
       closeEditPanel();
@@ -1702,6 +1750,22 @@ export default function Accounts() {
                       searchable
                       searchPlaceholder={SITE_SELECT_SEARCH_PLACEHOLDER}
                     />
+                    {isAgentRouterSelected ? (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--color-text-muted)",
+                          background: "var(--color-bg-subtle, rgba(125,125,125,0.08))",
+                          borderRadius: 8,
+                          padding: "8px 10px",
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        AgentRouter 只有在「重新登录」时才会触发签到：添加完成后，请在账号的「编辑 →
+                        签到重登录」里选择 GitHub/LinuxDO 并粘贴对应站点的
+                        Cookie，签到才会自动完成一次重新登录并计入奖励。
+                      </div>
+                    ) : null}
                     <input
                       placeholder="连接名称（可选）"
                       value={tokenForm.username}
@@ -2709,6 +2773,58 @@ export default function Accounts() {
                   协议。
                 </div>
                 {(editingAccount?.site?.platform || "").toLowerCase() ===
+                  "agentrouter" && (
+                  <>
+                    <ModernSelect
+                      value={editForm.checkinReloginProvider}
+                      onChange={(value) =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          checkinReloginProvider: value,
+                        }))
+                      }
+                      options={[
+                        { value: "", label: "签到重登录方式（未设置）" },
+                        { value: "github", label: "GitHub 重登录签到" },
+                        { value: "linuxdo", label: "LinuxDO 重登录签到" },
+                      ]}
+                      placeholder="签到重登录方式"
+                    />
+                {editForm.checkinReloginProvider ? (
+                      <>
+                        <textarea
+                          placeholder={`${editForm.checkinReloginProvider === "linuxdo" ? "connect.linux.do" : "github.com"} 的 Cookie（F12 → Application → Cookie 整段复制）`}
+                          value={editForm.checkinReloginCookie}
+                          onChange={(e) =>
+                            setEditForm((prev) => ({
+                              ...prev,
+                              checkinReloginCookie: e.target.value,
+                            }))
+                          }
+                          style={{
+                            ...inputStyle,
+                            fontFamily: "var(--font-mono)",
+                            minHeight: 72,
+                            resize: "vertical",
+                          }}
+                        />
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "var(--color-text-muted)",
+                            marginTop: -4,
+                          }}
+                        >
+                          AgentRouter
+                          只有在重新登录时才触发签到。保存第三方登录 Cookie
+                          后，签到会自动完成一次“重新登录”并刷新本账号凭证；Cookie
+                          过期时按提示更新即可。
+                        </div>
+                      </>
+                    ) : null}
+                  </>
+                )}
+                {(editingAccount?.site?.platform || "").toLowerCase() ===
                   "sub2api" && (
                   <>
                     <input
@@ -3033,13 +3149,7 @@ export default function Accounts() {
                               )}
                               {capabilities.canCheckin && (
                                 <button
-                                  onClick={() =>
-                                    withLoading(
-                                      `checkin-${a.id}`,
-                                      () => api.triggerCheckin(a.id),
-                                      "签到完成",
-                                    )
-                                  }
+                                  onClick={() => handleCheckin(a.id)}
                                   disabled={actionLoading[`checkin-${a.id}`]}
                                   className="btn btn-link btn-link-warning"
                                 >
@@ -3364,13 +3474,7 @@ export default function Accounts() {
                               </button>
                               {capabilities.canCheckin && (
                                 <button
-                                  onClick={() =>
-                                    withLoading(
-                                      `checkin-${a.id}`,
-                                      () => api.triggerCheckin(a.id),
-                                      "签到完成",
-                                    )
-                                  }
+                                  onClick={() => handleCheckin(a.id)}
                                   disabled={actionLoading[`checkin-${a.id}`]}
                                   className="btn btn-link btn-link-warning"
                                 >

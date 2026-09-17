@@ -1,5 +1,6 @@
 import type { PlatformAdapter } from './base.js';
 import { AnyRouterAdapter } from './anyrouter.js';
+import { AgentRouterAdapter } from './agentrouter.js';
 import { NewApiAdapter } from './newApi.js';
 import { OneApiAdapter } from './oneApi.js';
 import { VeloeraAdapter } from './veloera.js';
@@ -26,6 +27,7 @@ const adapters: PlatformAdapter[] = [
   new AntigravityAdapter(),
   new CliProxyApiAdapter(),
   new AnyRouterAdapter(),
+  new AgentRouterAdapter(),
   new DoneHubAdapter(),
   new OneHubAdapter(),
   new VeloeraAdapter(),
@@ -43,8 +45,17 @@ export function getAdapter(platform: string): PlatformAdapter | undefined {
   return adapters.find((a) => a.platformName === normalized);
 }
 
+export function getAdapterForSite(platform: string, url?: string | null): PlatformAdapter | undefined {
+  const urlHint = detectPlatformByUrlHint(url || '');
+  if (urlHint === 'agentrouter' || urlHint === 'anyrouter') {
+    return getAdapter(urlHint);
+  }
+  return getAdapter(platform);
+}
+
 const titleFirstPlatforms = new Set<string>([
   'anyrouter',
+  'agentrouter',
   'done-hub',
   'one-hub',
   'veloera',

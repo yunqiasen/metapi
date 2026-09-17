@@ -1,9 +1,10 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
+import { waitForBackgroundTaskToReachTerminalState } from '../../test-fixtures/backgroundTaskTestUtils.js';
 
 const getModelsMock = vi.fn();
 
@@ -20,6 +21,7 @@ describe('accounts api key recovery', { timeout: 15_000 }, () => {
   let db: DbModule['db'];
   let schema: DbModule['schema'];
   let dataDir = '';
+  let tasks: typeof import('../../services/backgroundTaskService.js');
 
   beforeAll(async () => {
     dataDir = mkdtempSync(join(tmpdir(), 'metapi-accounts-apikey-recovery-'));
@@ -28,6 +30,7 @@ describe('accounts api key recovery', { timeout: 15_000 }, () => {
     await import('../../db/migrate.js');
     const dbModule = await import('../../db/index.js');
     const routesModule = await import('./accounts.js');
+    tasks = await import('../../services/backgroundTaskService.js');
     db = dbModule.db;
     schema = dbModule.schema;
 
@@ -37,6 +40,7 @@ describe('accounts api key recovery', { timeout: 15_000 }, () => {
 
   beforeEach(async () => {
     getModelsMock.mockReset();
+    tasks.__resetBackgroundTasksForTests();
 
     await db.delete(schema.proxyLogs).run();
     await db.delete(schema.checkinLogs).run();
@@ -48,6 +52,19 @@ describe('accounts api key recovery', { timeout: 15_000 }, () => {
     await db.delete(schema.siteApiEndpoints).run();
     await db.delete(schema.accounts).run();
     await db.delete(schema.sites).run();
+  });
+
+  async function finishMaintenance() {
+    const maintenance = tasks.listBackgroundTasks().filter((task) => task.type === 'account-update-maintenance');
+    for (const task of maintenance) {
+      await waitForBackgroundTaskToReachTerminalState(tasks.getBackgroundTask, task.id);
+    }
+    return maintenance.map((task) => tasks.getBackgroundTask(task.id));
+  }
+
+  afterEach(async () => {
+    await finishMaintenance();
+    tasks.__resetBackgroundTasksForTests();
   });
 
   afterAll(async () => {
@@ -90,9 +107,10 @@ describe('accounts api key recovery', { timeout: 15_000 }, () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       id: account.id,
-      status: 'active',
+      status: 'expired',
       apiToken: 'sk-new-valid-key',
     });
+    expect(await finishMaintenance()).toContainEqual(expect.objectContaining({ status: 'succeeded' }));
 
     const latest = await db.select().from(schema.accounts).where(eq(schema.accounts.id, account.id)).get();
     expect(latest).toMatchObject({
@@ -208,6 +226,7 @@ describe('accounts api key recovery', { timeout: 15_000 }, () => {
       status: 'expired',
       apiToken: 'sk-new-invalid-key',
     });
+    expect(await finishMaintenance()).toContainEqual(expect.objectContaining({ status: 'failed' }));
 
     const latest = await db.select().from(schema.accounts).where(eq(schema.accounts.id, account.id)).get();
     expect(latest).toMatchObject({

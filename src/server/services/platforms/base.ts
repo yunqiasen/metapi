@@ -6,6 +6,10 @@ export interface CheckinResult {
   success: boolean;
   message: string;
   reward?: string;
+  balanceInfo?: BalanceInfo;
+  alreadyCheckedIn?: boolean;
+  quotaUnchanged?: boolean;
+  rewardPending?: boolean;
 }
 
 export interface SubscriptionPlanSummary {
@@ -37,14 +41,18 @@ export interface BalanceInfo {
   subscriptionSummary?: SubscriptionSummary;
 }
 
-interface LoginResult {
+export interface LoginResult {
   success: boolean;
   accessToken?: string;
   username?: string;
+  platformUserId?: number;
+  userInfo?: UserInfo;
+  balance?: BalanceInfo;
   message?: string;
 }
 
 export interface UserInfo {
+  id?: number;
   username: string;
   displayName?: string;
   email?: string;
@@ -92,10 +100,16 @@ export interface CreateApiTokenOptions {
 
 export interface PlatformAdapter {
   readonly platformName: string;
+  readonly verificationDiagnostics?: 'adapter';
   detect(url: string): Promise<boolean>;
   login(baseUrl: string, username: string, password: string): Promise<LoginResult>;
   getUserInfo(baseUrl: string, accessToken: string, platformUserId?: number): Promise<UserInfo | null>;
-  verifyToken(baseUrl: string, token: string, platformUserId?: number): Promise<TokenVerifyResult>;
+  verifyToken(
+    baseUrl: string,
+    token: string,
+    platformUserId?: number,
+    credentialMode?: 'auto' | 'session' | 'apikey',
+  ): Promise<TokenVerifyResult>;
   checkin(baseUrl: string, accessToken: string, platformUserId?: number): Promise<CheckinResult>;
   getBalance(baseUrl: string, accessToken: string, platformUserId?: number): Promise<BalanceInfo>;
   getModels(baseUrl: string, token: string, platformUserId?: number): Promise<string[]>;

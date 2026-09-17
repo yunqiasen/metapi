@@ -402,6 +402,10 @@ export async function resolveSiteProxyUrlByRequestUrl(requestUrl: string): Promi
   return resolved.proxyUrl;
 }
 
+export async function resolveEffectiveSiteProxyUrlByRequestUrl(requestUrl: string): Promise<string | null> {
+  return accountProxyOverride.getStore() ?? await resolveSiteProxyUrlByRequestUrl(requestUrl);
+}
+
 export async function withSiteProxyRequestInit(
   requestUrl: string,
   options?: UndiciRequestInit,

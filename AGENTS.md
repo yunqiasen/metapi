@@ -72,3 +72,14 @@ make small, consistent changes without re-learning the codebase each time.
   the same area so the rule becomes executable.
 - Keep local planning files under `docs/plans/`. They are intentionally ignored
   by git and should not be treated as published documentation.
+
+
+## Local 4010 Deployment Boundary
+
+- This worktree is the intended main-based local-repairs deployment for port 4010.
+- Preserve the existing uncommitted main repairs. Do not replace this worktree with pure upstream or the abandoned `../metapi` Fork.
+- Build only via this worktree's `scripts/deploy/build-main-repairs.sh`; verify `main-repairs-manifest.json` and `main-repairs-guard.mjs` before deployment.
+- Keep `docker-compose.main.yml` pointed at the verified main-repairs image. Never copy dist from a different worktree or restore an older production database over current data.
+- Keep account Session, third-party relogin Cookie, user ID, and encryption secrets intact. No browser Profile, Chromium, or noVNC is needed for this deployment.
+- No commit, push, removal of the abandoned Fork, or cleanup of unrelated projects unless the user explicitly requests it.
+- Restoration evidence and exact source/image/data mapping: `docs/main-repairs-restoration.md`.

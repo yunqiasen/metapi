@@ -7,6 +7,14 @@ type AutoReloginConfig = {
   updatedAt?: unknown;
 };
 
+export type CheckinReloginProvider = 'github' | 'linuxdo';
+
+type CheckinReloginConfig = {
+  provider?: unknown;
+  cookie?: unknown;
+  updatedAt?: unknown;
+};
+
 type Sub2ApiAuthConfig = {
   refreshToken?: unknown;
   tokenExpiresAt?: unknown;
@@ -36,6 +44,7 @@ type AccountExtraConfig = {
     [key: string]: unknown;
   };
   autoRelogin?: AutoReloginConfig;
+  checkinRelogin?: CheckinReloginConfig;
   sub2apiAuth?: Sub2ApiAuthConfig;
   sub2apiSubscription?: Sub2ApiSubscriptionConfig;
   [key: string]: unknown;
@@ -354,6 +363,42 @@ export function mergeAccountExtraConfig(
     ...patch,
   };
   return JSON.stringify(merged);
+}
+
+
+const VALID_CHECKIN_RELOGIN_PROVIDERS = new Set<CheckinReloginProvider>(['github', 'linuxdo']);
+
+export function normalizeCheckinReloginProvider(raw: unknown): CheckinReloginProvider | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  return VALID_CHECKIN_RELOGIN_PROVIDERS.has(normalized as CheckinReloginProvider)
+    ? (normalized as CheckinReloginProvider)
+    : null;
+}
+
+export function guessCheckinReloginProviderFromUsername(username?: string | null): CheckinReloginProvider | null {
+  const text = (username || '').trim().toLowerCase();
+  if (text.startsWith('github_')) return 'github';
+  if (text.startsWith('linuxdo_')) return 'linuxdo';
+  return null;
+}
+
+export function getCheckinReloginConfig(
+  extraConfig?: ExtraConfigInput,
+  username?: string | null,
+): { provider: CheckinReloginProvider; cookie: string } | null {
+  const parsed = parseExtraConfig(extraConfig);
+  const relogin = parsed.checkinRelogin;
+  if (!relogin || typeof relogin !== 'object' || Array.isArray(relogin)) return null;
+
+  const cookie = typeof relogin.cookie === 'string' ? relogin.cookie.trim() : '';
+  if (!cookie) return null;
+
+  const provider = normalizeCheckinReloginProvider(relogin.provider)
+    || guessCheckinReloginProviderFromUsername(username);
+  if (!provider) return null;
+
+  return { provider, cookie };
 }
 
 export function getAutoReloginConfig(extraConfig?: ExtraConfigInput): {

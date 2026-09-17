@@ -186,7 +186,12 @@ describe('accounts api endpoint host selection', { timeout: 15_000 }, () => {
       tokenType: 'session',
       apiToken: 'sk-derived',
     });
-    expect(verifyTokenMock).toHaveBeenCalledWith('https://console.example.com', 'session-token', undefined);
+    expect(verifyTokenMock).toHaveBeenCalledWith(
+      'https://console.example.com',
+      'session-token',
+      undefined,
+      'session',
+    );
     expect(getModelsMock).not.toHaveBeenCalled();
   });
 

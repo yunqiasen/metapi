@@ -29,6 +29,8 @@ const accountUpdatePayloadSchema = z.object({
   isPinned: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),
   proxyUrl: z.union([z.string(), z.null()]).optional(),
+  checkinReloginProvider: z.union([z.string(), z.null()]).optional(),
+  checkinReloginCookie: z.union([z.string(), z.null()]).optional(),
 }).passthrough();
 
 const accountBatchPayloadSchema = z.object({

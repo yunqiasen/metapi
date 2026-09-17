@@ -3,6 +3,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { eq } from 'drizzle-orm';
+import type { BackgroundTask } from '../../services/backgroundTaskService.js';
 import { waitForBackgroundTaskToReachTerminalState } from '../../test-fixtures/backgroundTaskTestUtils.js';
 
 const verifyTokenMock = vi.fn();
@@ -42,7 +44,8 @@ describe('accounts background initialization', () => {
   let schema: DbModule['schema'];
   let dataDir = '';
   let resetBackgroundTasks: (() => void) | null = null;
-  let getBackgroundTask: ((taskId: string) => { status: string } | null) | null = null;
+  let getBackgroundTask: (taskId: string) => BackgroundTask | null;
+  let listBackgroundTasks: () => BackgroundTask[];
 
   beforeAll(async () => {
     dataDir = mkdtempSync(join(tmpdir(), 'metapi-accounts-background-init-'));
@@ -56,6 +59,7 @@ describe('accounts background initialization', () => {
     schema = dbModule.schema;
     resetBackgroundTasks = backgroundTaskModule.__resetBackgroundTasksForTests;
     getBackgroundTask = backgroundTaskModule.getBackgroundTask;
+    listBackgroundTasks = backgroundTaskModule.listBackgroundTasks;
 
     app = Fastify();
     await app.register(routesModule.accountsRoutes);
@@ -175,4 +179,92 @@ describe('accounts background initialization', () => {
       await responsePromise.catch(() => undefined);
     }
   });
+
+  async function seedEditableAccount() {
+    const site = await db.insert(schema.sites).values({
+      name: 'Editable Session Site', url: 'https://editable-session.example.com', platform: 'agentrouter',
+    }).returning().get();
+    return db.insert(schema.accounts).values({
+      siteId: site.id, username: 'github_166363', accessToken: 'session=old', apiToken: 'sk-existing',
+      status: 'active', checkinEnabled: true,
+      extraConfig: JSON.stringify({ platformUserId: 166363, checkinRelogin: { provider: 'github', cookie: 'user_session=fixture' } }),
+    }).returning().get();
+  }
+
+  async function finishMaintenance() {
+    for (const task of listBackgroundTasks().filter((item) => item.type === 'account-update-maintenance')) {
+      await waitForBackgroundTaskToReachTerminalState(getBackgroundTask, task.id);
+    }
+  }
+
+  it('saves an edited Cookie before slow model synchronization completes', async () => {
+    const account = await seedEditableAccount();
+    let releaseModels!: (result: unknown) => void;
+    refreshModelsForAccountMock.mockReturnValue(new Promise((resolve) => { releaseModels = resolve; }));
+    const responsePromise = app.inject({
+      method: 'PUT', url: `/api/accounts/${account.id}`,
+      payload: { accessToken: 'Cookie: session=new\nsession==;\n acw_tc=shield', apiToken: 'sk-existing' },
+    });
+    try {
+      expect(await Promise.race([
+        responsePromise.then(() => 'saved'),
+        new Promise((resolve) => setTimeout(() => resolve('waiting-on-upstream'), 200)),
+      ])).toBe('saved');
+      const response = await responsePromise;
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ id: account.id, accessToken: 'session=newsession==; acw_tc=shield' });
+      const saved = await db.select().from(schema.accounts).where(eq(schema.accounts.id, account.id)).get();
+      expect(JSON.parse(saved?.extraConfig || '{}').checkinRelogin.cookie).toBe('user_session=fixture');
+      expect(listBackgroundTasks()).toContainEqual(expect.objectContaining({ type: 'account-update-maintenance' }));
+    } finally {
+      releaseModels({ accountId: account.id, refreshed: true, status: 'success' });
+      await responsePromise;
+      await finishMaintenance();
+    }
+    expect(refreshModelsForAccountMock).toHaveBeenCalledTimes(1);
+    expect(rebuildTokenRoutesFromAvailabilityMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('serializes overlapping edits without dropping maintenance for the newer credentials', async () => {
+    const account = await seedEditableAccount();
+    let releaseFirst!: (result: unknown) => void;
+    refreshModelsForAccountMock
+      .mockReturnValueOnce(new Promise((resolve) => { releaseFirst = resolve; }))
+      .mockResolvedValue({ accountId: account.id, refreshed: true, status: 'success' });
+    const first = app.inject({ method: 'PUT', url: `/api/accounts/${account.id}`, payload: { apiToken: 'sk-first' } });
+    let second: ReturnType<typeof app.inject> | undefined;
+    try {
+      expect(await Promise.race([first.then(() => 'saved'), new Promise((resolve) => setTimeout(() => resolve('timeout'), 200))])).toBe('saved');
+      await vi.waitFor(() => expect(refreshModelsForAccountMock).toHaveBeenCalledTimes(1));
+      second = app.inject({ method: 'PUT', url: `/api/accounts/${account.id}`, payload: { apiToken: 'sk-second' } });
+      const response = await second;
+      expect(response.statusCode).toBe(200);
+      expect(response.json().apiToken).toBe('sk-second');
+      expect(refreshModelsForAccountMock).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseFirst({ accountId: account.id, refreshed: true, status: 'success' });
+      await first;
+      if (second) await second;
+      await finishMaintenance();
+    }
+    expect(refreshModelsForAccountMock).toHaveBeenCalledTimes(2);
+    expect(ensureDefaultTokenForAccountMock).toHaveBeenLastCalledWith(account.id, 'sk-second', expect.anything());
+    const saved = await db.select().from(schema.accounts).where(eq(schema.accounts.id, account.id)).get();
+    expect(saved?.apiToken).toBe('sk-second');
+  });
+
+  it('reports a failed background synchronization without undoing the saved credentials', async () => {
+    const account = await seedEditableAccount();
+    refreshModelsForAccountMock.mockResolvedValue({
+      accountId: account.id, refreshed: false, status: 'failed', errorMessage: 'fixture upstream error',
+    });
+    const response = await app.inject({ method: 'PUT', url: `/api/accounts/${account.id}`, payload: { accessToken: 'session=new' } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().accessToken).toBe('session=new');
+    await finishMaintenance();
+    expect(listBackgroundTasks()).toContainEqual(expect.objectContaining({
+      type: 'account-update-maintenance', status: 'failed', error: 'fixture upstream error',
+    }));
+  });
+
 });

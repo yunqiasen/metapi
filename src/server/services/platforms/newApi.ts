@@ -1,11 +1,33 @@
 import { ApiTokenInfo, BasePlatformAdapter, CheckinResult, BalanceInfo, UserInfo, TokenVerifyResult, CreateApiTokenOptions, type SiteAnnouncement } from './base.js';
 import type { RequestInit as UndiciRequestInit } from 'undici';
 import { createContext, runInContext } from 'node:vm';
-import { withSiteProxyRequestInit } from '../siteProxy.js';
-import { fetchJsonWithShieldCookieRetry } from './newApiShield.js';
+import { resolveEffectiveSiteProxyUrlByRequestUrl, withSiteProxyRequestInit } from '../siteProxy.js';
+import {
+  buildNewApiCookieCandidates,
+  fetchJsonWithShieldCookieRetry,
+  hasUsableSessionCookie,
+  normalizeNewApiCredential,
+} from './newApiShield.js';
+
+export function parseNewApiBalance(data: any): BalanceInfo {
+  const quota = (data?.quota || 0) / 500000;
+  const used = (data?.used_quota || 0) / 500000;
+  const total = quota + used;
+  const todayIncome = Number.isFinite(data?.today_income) ? (data.today_income / 500000) : undefined;
+  const todayQuotaConsumption = Number.isFinite(data?.today_quota_consumption) ? (data.today_quota_consumption / 500000) : undefined;
+  return { balance: quota, used, quota: total, todayIncome, todayQuotaConsumption };
+}
 
 export class NewApiAdapter extends BasePlatformAdapter {
   readonly platformName: string = 'new-api';
+  protected readonly reuseShieldCookiesAcrossRequests: boolean = false;
+
+  private readonly shieldRateLimitUntil = new Map<string, number>();
+
+  private readonly shieldCookieCache = new Map<string, {
+    cookieHeader: string;
+    expiresAt: number;
+  }>();
 
   async detect(url: string): Promise<boolean> {
     try {
@@ -52,7 +74,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
 
   private authHeaders(accessToken: string, userId?: number): Record<string, string> {
     return {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${normalizeNewApiCredential(accessToken)}`,
       ...this.userIdHeaders(userId),
     };
   }
@@ -72,21 +94,8 @@ export class NewApiAdapter extends BasePlatformAdapter {
     return headers;
   }
 
-  private buildCookieCandidates(token: string): string[] {
-    const trimmed = (token || '').trim();
-    if (!trimmed) return [];
-
-    const raw = trimmed.startsWith('Bearer ') ? trimmed.slice(7).trim() : trimmed;
-    const candidates: string[] = [];
-
-    if (raw.includes('=')) {
-      candidates.push(raw);
-    }
-
-    candidates.push(`session=${raw}`);
-    candidates.push(`token=${raw}`);
-
-    return Array.from(new Set(candidates));
+  protected buildCookieCandidates(token: string): string[] {
+    return buildNewApiCookieCandidates(token);
   }
 
   private decodeBase64Loose(value: string): string | null {
@@ -171,6 +180,22 @@ export class NewApiAdapter extends BasePlatformAdapter {
     return ids;
   }
 
+  // Only a structured Session id is a hint; username suffixes are provider IDs.
+  // The caller must still validate this hint against /api/user/self.
+  protected extractSessionUserId(token: string): number | undefined {
+    const ids = new Set<number>();
+    for (const cookie of this.buildCookieCandidates(token)) {
+      const value = cookie.match(/(?:^|;\s*)session=([^;]+)/i)?.[1];
+      if (!value) continue;
+      const envelope = this.decodeBase64BufferLoose(value)?.toString('utf8').split('|');
+      if (!envelope || envelope.length < 3) continue;
+      const payload = this.decodeBase64BufferLoose(envelope[1]);
+      if (!payload) continue;
+      for (const id of this.extractGobFieldInts(payload, 'id')) ids.add(id);
+    }
+    return ids.size === 1 ? [...ids][0] : undefined;
+  }
+
   private extractLikelyUserIds(token: string): number[] {
     const ids: number[] = [];
     const push = (value: unknown) => {
@@ -248,14 +273,18 @@ export class NewApiAdapter extends BasePlatformAdapter {
     return candidates;
   }
 
-  private parseTokenItems(payload: any): any[] {
+  protected parseTokenItemsOrNull(payload: any): any[] | null {
     if (Array.isArray(payload?.data)) return payload.data;
     if (Array.isArray(payload?.data?.items)) return payload.data.items;
     if (Array.isArray(payload?.data?.data)) return payload.data.data;
     if (Array.isArray(payload?.items)) return payload.items;
     if (Array.isArray(payload?.list)) return payload.list;
     if (Array.isArray(payload?.data?.list)) return payload.data.list;
-    return [];
+    return null;
+  }
+
+  private parseTokenItems(payload: any): any[] {
+    return this.parseTokenItemsOrNull(payload) || [];
   }
 
   private isTokenListResponse(payload: any): boolean {
@@ -271,12 +300,12 @@ export class NewApiAdapter extends BasePlatformAdapter {
     );
   }
 
-  private normalizeTokenKeyForCompare(value?: string | null): string {
+  protected normalizeTokenKeyForCompare(value?: string | null): string {
     const trimmed = (value || '').trim();
     return trimmed.startsWith('Bearer ') ? trimmed.slice(7).trim() : trimmed;
   }
 
-  private parseGroupKeys(payload: any): string[] {
+  protected parseGroupKeys(payload: any): string[] {
     if (payload && typeof payload === 'object' && payload?.success === false) {
       return [];
     }
@@ -313,7 +342,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     return message || '拉取分组失败';
   }
 
-  private normalizeTokenItems(items: any[]): ApiTokenInfo[] {
+  protected normalizeTokenItems(items: any[]): ApiTokenInfo[] {
     const normalized: ApiTokenInfo[] = [];
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index];
@@ -337,8 +366,9 @@ export class NewApiAdapter extends BasePlatformAdapter {
     return normalized;
   }
 
-  private parseUserInfo(data: any): UserInfo {
+  protected parseUserInfo(data: any): UserInfo {
     return {
+      ...(Number.isSafeInteger(data?.id) && data.id > 0 ? { id: data.id } : {}),
       username: data?.username || data?.display_name || '',
       displayName: data?.display_name,
       email: data?.email,
@@ -346,13 +376,8 @@ export class NewApiAdapter extends BasePlatformAdapter {
     };
   }
 
-  private parseBalance(data: any): BalanceInfo {
-    const quota = (data?.quota || 0) / 500000;
-    const used = (data?.used_quota || 0) / 500000;
-    const total = quota + used;
-    const todayIncome = Number.isFinite(data?.today_income) ? (data.today_income / 500000) : undefined;
-    const todayQuotaConsumption = Number.isFinite(data?.today_quota_consumption) ? (data.today_quota_consumption / 500000) : undefined;
-    return { balance: quota, used, quota: total, todayIncome, todayQuotaConsumption };
+  protected parseBalance(data: any): BalanceInfo {
+    return parseNewApiBalance(data);
   }
 
   private extractLoginAccessToken(payload: any): string | null {
@@ -373,7 +398,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     return null;
   }
 
-  private buildDefaultTokenPayload(options?: CreateApiTokenOptions): Record<string, unknown> {
+  protected buildDefaultTokenPayload(options?: CreateApiTokenOptions): Record<string, unknown> {
     const normalizedName = (options?.name || '').trim() || 'metapi';
     const unlimitedQuota = options?.unlimitedQuota ?? true;
     const remainQuota = Number.isFinite(options?.remainQuota)
@@ -483,19 +508,112 @@ export class NewApiAdapter extends BasePlatformAdapter {
     return next.join('; ');
   }
 
+  private mergeCookieHeaderPairs(cookieHeader: string, incomingCookieHeader: string): string {
+    let merged = cookieHeader;
+    for (const pair of incomingCookieHeader.split(';')) {
+      const normalizedPair = pair.trim();
+      if (!normalizedPair) continue;
+      const eq = normalizedPair.indexOf('=');
+      if (eq <= 0) continue;
+      const name = normalizedPair.slice(0, eq).trim();
+      const value = normalizedPair.slice(eq + 1);
+      merged = this.upsertCookie(merged, name, value);
+    }
+    return merged;
+  }
+
   private mergeSetCookiePairs(cookieHeader: string, setCookieHeaders: string[]): string {
     let merged = cookieHeader;
     for (const raw of setCookieHeaders) {
       if (!raw) continue;
       const firstPair = raw.split(';')[0]?.trim();
       if (!firstPair) continue;
-      const eq = firstPair.indexOf('=');
-      if (eq <= 0) continue;
-      const name = firstPair.slice(0, eq).trim();
-      const value = firstPair.slice(eq + 1);
-      merged = this.upsertCookie(merged, name, value);
+      merged = this.mergeCookieHeaderPairs(merged, firstPair);
     }
     return merged;
+  }
+
+  private async shieldCookieCacheKey(url: string): Promise<string | null> {
+    try {
+      return `${new URL(url).origin}|${await resolveEffectiveSiteProxyUrlByRequestUrl(url) || 'direct'}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private isShieldCookieName(name: string): boolean {
+    return ['acw_tc', 'acw_sc__v2', 'cdn_sec_tc'].includes(name.trim().toLowerCase());
+  }
+
+  private extractShieldCookieHeader(cookieHeader: string): string {
+    const shieldCookies: string[] = [];
+    for (const pair of cookieHeader.split(';')) {
+      const normalizedPair = pair.trim();
+      if (!normalizedPair) continue;
+      const eq = normalizedPair.indexOf('=');
+      if (eq <= 0) continue;
+      const name = normalizedPair.slice(0, eq).trim().toLowerCase();
+      if (!this.isShieldCookieName(name)) continue;
+      shieldCookies.push(`${name}=${normalizedPair.slice(eq + 1)}`);
+    }
+    return shieldCookies.join('; ');
+  }
+
+  protected stripShieldCookies(cookieHeader: string): string {
+    return cookieHeader
+      .split(';')
+      .map((pair) => pair.trim())
+      .filter((pair) => {
+        const eq = pair.indexOf('=');
+        if (eq <= 0) return false;
+        return !this.isShieldCookieName(pair.slice(0, eq));
+      })
+      .join('; ');
+  }
+
+  private async getCachedShieldCookieHeader(url: string): Promise<string> {
+    if (!this.reuseShieldCookiesAcrossRequests) return '';
+    const cacheKey = await this.shieldCookieCacheKey(url);
+    if (!cacheKey) return '';
+
+    const cached = this.shieldCookieCache.get(cacheKey);
+    if (!cached) return '';
+    if (cached.expiresAt <= Date.now()) {
+      this.shieldCookieCache.delete(cacheKey);
+      return '';
+    }
+    return cached.cookieHeader;
+  }
+
+  private async rememberShieldCookieHeader(url: string, cookieHeader: string): Promise<void> {
+    if (!this.reuseShieldCookiesAcrossRequests) return;
+    const cacheKey = await this.shieldCookieCacheKey(url);
+    const shieldCookieHeader = this.extractShieldCookieHeader(cookieHeader);
+    if (!cacheKey || !shieldCookieHeader) return;
+
+    this.shieldCookieCache.set(cacheKey, {
+      cookieHeader: shieldCookieHeader,
+      expiresAt: Date.now() + 30 * 60 * 1000,
+    });
+  }
+
+  private async forgetShieldCookieHeader(url: string): Promise<void> {
+    const cacheKey = await this.shieldCookieCacheKey(url);
+    if (cacheKey) this.shieldCookieCache.delete(cacheKey);
+  }
+
+  protected async warmupLoginPage(baseUrl: string, signal?: AbortSignal): Promise<void> {
+    if (await this.getCachedShieldCookieHeader(baseUrl)) return;
+
+    try {
+      await this.fetchJsonRawWithCookie(`${baseUrl}/login`, {
+        method: 'GET',
+        signal,
+        headers: {
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      });
+    } catch {}
   }
 
   private parseJsonSafe<T>(text: string): T | null {
@@ -568,7 +686,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
 
   private isShieldChallenge(contentType: string, text: string): boolean {
     const ct = (contentType || '').toLowerCase();
-    if (ct.includes('text/html') && /var\s+arg1\s*=|acw_sc__v2|cdn_sec_tc|<script/i.test(text)) {
+    if (ct.includes('text/html') && /var\s+arg1\s*=|acw_sc__v2|cdn_sec_tc/i.test(text)) {
       return true;
     }
     return /var\s+arg1\s*=/.test(text);
@@ -601,29 +719,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
   }
 
   private hasUsableSessionCookie(cookieHeader: string): boolean {
-    if (!cookieHeader) return false;
-    const ignored = new Set(['acw_tc', 'acw_sc__v2', 'cdn_sec_tc']);
-    const pairs = cookieHeader.split(';').map((part) => part.trim()).filter(Boolean);
-    for (const pair of pairs) {
-      const eq = pair.indexOf('=');
-      if (eq <= 0) continue;
-      const name = pair.slice(0, eq).trim().toLowerCase();
-      if (!name || ignored.has(name)) continue;
-      if (
-        name === 'session'
-        || name === 'token'
-        || name === 'auth_token'
-        || name === 'access_token'
-        || name === 'jwt'
-        || name === 'jwt_token'
-        || name.includes('session')
-        || name.includes('token')
-        || name.includes('auth')
-      ) {
-        return true;
-      }
-    }
-    return false;
+    return hasUsableSessionCookie(cookieHeader);
   }
 
   private shouldFallbackToCookieCheckin(message?: string | null): boolean {
@@ -712,10 +808,16 @@ export class NewApiAdapter extends BasePlatformAdapter {
     return failureMessage;
   }
 
-  private async fetchJsonRawWithCookie<T>(
+  protected async fetchJsonRawWithCookie<T>(
     url: string,
     options?: UndiciRequestInit,
-  ): Promise<{ data: T | null; cookieHeader: string }> {
+  ): Promise<{
+    data: T | null;
+    cookieHeader: string;
+    failureKind?: 'shield' | 'non-json' | 'rate-limit';
+    status?: number;
+    retryAfterMs?: number;
+  }> {
     const { fetch } = await import('undici');
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -723,11 +825,27 @@ export class NewApiAdapter extends BasePlatformAdapter {
       ...this.normalizeHeaders(options?.headers),
     };
 
-    let cookieHeader = headers['Cookie'] || headers['cookie'] || '';
+    const routeKey = await this.shieldCookieCacheKey(url);
+    const retryAfterMs = routeKey && this.reuseShieldCookiesAcrossRequests
+      ? (this.shieldRateLimitUntil.get(routeKey) || 0) - Date.now() : 0;
+    if (retryAfterMs > 0) {
+      return { data: null, cookieHeader: '', failureKind: 'rate-limit', status: 429, retryAfterMs };
+    }
+    if (routeKey) this.shieldRateLimitUntil.delete(routeKey);
+    const importedCookieHeader = headers['Cookie'] || headers['cookie'] || '';
+    // Session is account-owned; WAF cookies belong to the current HTTP route.
+    const requestCookieHeader = this.reuseShieldCookiesAcrossRequests
+      ? this.stripShieldCookies(importedCookieHeader) : importedCookieHeader;
+    const cachedShieldCookieHeader = await this.getCachedShieldCookieHeader(url);
+    let usedCachedShieldCookies = !!cachedShieldCookieHeader;
+    let cookieHeader = this.mergeCookieHeaderPairs(
+      cachedShieldCookieHeader,
+      requestCookieHeader,
+    );
     if (cookieHeader) {
       headers['Cookie'] = cookieHeader;
-      delete headers['cookie'];
     }
+    delete headers['cookie'];
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const requestOptions: UndiciRequestInit = {
@@ -741,26 +859,65 @@ export class NewApiAdapter extends BasePlatformAdapter {
       const getSetCookie = (res.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie;
       if (typeof getSetCookie === 'function') {
         cookieHeader = this.mergeSetCookiePairs(cookieHeader, getSetCookie.call(res.headers) || []);
+        await this.rememberShieldCookieHeader(url, cookieHeader);
+      }
+      if (res.status === 429 || (res.status === 403 && /http_ratelimit/i.test(text))) {
+        const rawRetryAfter = res.headers.get('retry-after');
+        const seconds = rawRetryAfter == null ? NaN : Number(rawRetryAfter);
+        const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(rawRetryAfter || '') - Date.now();
+        const retryAfterMs = Math.min(3_600_000, Math.max(1_000, Number.isFinite(delay) ? delay : 60_000));
+        if (routeKey && this.reuseShieldCookiesAcrossRequests) {
+          this.shieldRateLimitUntil.set(routeKey, Date.now() + retryAfterMs);
+        }
+        return { data: null, cookieHeader, failureKind: 'rate-limit', status: res.status, retryAfterMs };
       }
       const parsed = this.parseJsonSafe<T>(text);
-      if (parsed) return { data: parsed, cookieHeader };
+      if (parsed) return { data: parsed, cookieHeader, status: res.status };
 
-      if (!this.isShieldChallenge(res.headers.get('content-type') || '', text)) {
-        return { data: null, cookieHeader };
+      const contentType = res.headers.get('content-type') || '';
+      if (!this.isShieldChallenge(contentType, text)) {
+        if (res.status === 403 && (usedCachedShieldCookies || !!this.extractShieldCookieHeader(cookieHeader))) {
+          await this.forgetShieldCookieHeader(url);
+          usedCachedShieldCookies = false;
+          cookieHeader = this.stripShieldCookies(cookieHeader);
+          if (cookieHeader) {
+            headers['Cookie'] = cookieHeader;
+          } else {
+            delete headers['Cookie'];
+          }
+          continue;
+        }
+        return {
+          data: null,
+          cookieHeader,
+          failureKind: 'non-json',
+          status: res.status,
+        };
       }
       if (!cookieHeader) {
-        return { data: null, cookieHeader };
+        return {
+          data: null,
+          cookieHeader,
+          failureKind: 'shield',
+          status: res.status,
+        };
       }
 
       const acwScV2 = this.solveAcwScV2(text);
       if (!acwScV2) {
-        return { data: null, cookieHeader };
+        return {
+          data: null,
+          cookieHeader,
+          failureKind: 'shield',
+          status: res.status,
+        };
       }
       cookieHeader = this.upsertCookie(cookieHeader, 'acw_sc__v2', acwScV2);
+      await this.rememberShieldCookieHeader(url, cookieHeader);
       headers['Cookie'] = cookieHeader;
     }
 
-    return { data: null, cookieHeader };
+    return { data: null, cookieHeader, failureKind: 'shield' };
   }
 
   private async fetchJsonRaw<T>(url: string, options?: UndiciRequestInit): Promise<T | null> {
@@ -947,8 +1104,12 @@ export class NewApiAdapter extends BasePlatformAdapter {
     username: string,
     password: string,
   ): Promise<{ success: boolean; accessToken?: string; username?: string; message?: string }> {
+    if (this.platformName === 'anyrouter') {
+      await this.warmupLoginPage(baseUrl);
+    }
+
     try {
-      const { data: res, cookieHeader } = await this.fetchJsonRawWithCookie<any>(`${baseUrl}/api/user/login`, {
+      const { data: res, cookieHeader, failureKind, status } = await this.fetchJsonRawWithCookie<any>(`${baseUrl}/api/user/login`, {
         method: 'POST',
         body: JSON.stringify({ username, password }),
         headers: {
@@ -956,22 +1117,44 @@ export class NewApiAdapter extends BasePlatformAdapter {
         },
       });
       if (!res) {
-        return { success: false, message: 'shield challenge blocked login' };
+        if (failureKind === 'rate-limit') {
+          return { success: false, message: '登录请求被站点限流，请稍后重试' };
+        }
+        if (failureKind === 'shield') {
+          return { success: false, message: 'shield challenge blocked login' };
+        }
+        const statusText = typeof status === 'number' ? `HTTP ${status}` : '非 JSON 响应';
+        return { success: false, message: `登录接口返回非 JSON 响应 (${statusText})` };
       }
 
       const accessToken = this.extractLoginAccessToken(res);
+      const loginData = res?.data && typeof res.data === 'object' && !Array.isArray(res.data)
+        ? res.data
+        : null;
+      const platformUserId = Number.isFinite(Number(loginData?.id)) && Number(loginData?.id) > 0
+        ? Math.trunc(Number(loginData.id))
+        : undefined;
+      const metadata = loginData
+        ? {
+            ...(platformUserId ? { platformUserId } : {}),
+            userInfo: this.parseUserInfo(loginData),
+            balance: this.parseBalance(loginData),
+          }
+        : {};
       if (res?.success && accessToken) {
         return {
           success: true,
           accessToken,
-          username,
+          username: loginData?.username || username,
+          ...metadata,
         };
       }
       if (res?.success && this.hasUsableSessionCookie(cookieHeader)) {
         return {
           success: true,
           accessToken: cookieHeader,
-          username,
+          username: loginData?.username || username,
+          ...metadata,
         };
       }
 
@@ -987,10 +1170,48 @@ export class NewApiAdapter extends BasePlatformAdapter {
     }
   }
 
-  override async verifyToken(baseUrl: string, token: string, platformUserId?: number): Promise<TokenVerifyResult> {
+  protected async readSessionUserData(
+    baseUrl: string,
+    token: string,
+    platformUserId?: number,
+  ): Promise<any | null> {
+    const cookieRes = await this.fetchUserSelfByCookie(baseUrl, token, platformUserId);
+    if (cookieRes?.success && cookieRes?.data) return cookieRes.data;
+    if (platformUserId) return null;
+
+    const cookieUserId = await this.probeAlternateUserIdByCookie(baseUrl, token, platformUserId ?? null);
+    if (!cookieUserId) return null;
+    const cookieRetry = await this.fetchUserSelfByCookie(baseUrl, token, cookieUserId);
+    return cookieRetry?.success && cookieRetry?.data ? cookieRetry.data : null;
+  }
+
+  override async verifyToken(
+    baseUrl: string,
+    token: string,
+    platformUserId?: number,
+    credentialMode: 'auto' | 'session' | 'apikey' = 'auto',
+  ): Promise<TokenVerifyResult> {
+    token = normalizeNewApiCredential(token);
+    if (credentialMode === 'session') {
+      const sessionData = await this.readSessionUserData(baseUrl, token, platformUserId);
+      if (!sessionData) return { tokenType: 'unknown' };
+      const userId = Number(sessionData.id) || platformUserId;
+      let apiToken: string | null = null;
+      try { apiToken = await this.getApiTokenWithUser(baseUrl, token, userId ?? null); } catch {}
+      return {
+        tokenType: 'session',
+        userInfo: this.parseUserInfo(sessionData),
+        balance: this.parseBalance(sessionData),
+        apiToken,
+      };
+    }
+
     const openAiModels = await this.getOpenAiModels(baseUrl, token);
     if (openAiModels.length > 0) {
       return { tokenType: 'apikey', models: openAiModels };
+    }
+    if (credentialMode === 'apikey') {
+      return { tokenType: 'unknown' };
     }
 
     try {
@@ -1040,6 +1261,10 @@ export class NewApiAdapter extends BasePlatformAdapter {
       return { tokenType: 'session', userInfo, balance, apiToken };
     }
 
+    if (platformUserId) {
+      return { tokenType: 'unknown' };
+    }
+
     const cookieUserId = await this.probeAlternateUserIdByCookie(baseUrl, token, platformUserId);
     if (cookieUserId) {
       const cookieRetry = await this.fetchUserSelfByCookie(baseUrl, token, cookieUserId);
@@ -1081,6 +1306,18 @@ export class NewApiAdapter extends BasePlatformAdapter {
     }
   }
 
+  private readCheckinReward(data: unknown): string | undefined {
+    if (!data || typeof data !== 'object') return undefined;
+    const value = data as Record<string, unknown>;
+    // NewAPI returns raw quota units; legacy variants already return a display reward.
+    if (typeof value.quota_awarded === 'number' && Number.isFinite(value.quota_awarded) && value.quota_awarded >= 0) {
+      return String(value.quota_awarded / 500000);
+    }
+    if (typeof value.reward === 'number' && Number.isFinite(value.reward)) return String(value.reward);
+    if (typeof value.reward === 'string' && value.reward.trim()) return value.reward;
+    return undefined;
+  }
+
   async checkin(baseUrl: string, accessToken: string, platformUserId?: number): Promise<CheckinResult> {
     const resolvedUserId = platformUserId || await this.discoverUserId(baseUrl, accessToken);
     let firstFailureMessage: string | undefined;
@@ -1093,7 +1330,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
         headers,
       });
       if (res?.success) {
-        return { success: true, message: res.message || 'checkin success', reward: res.data?.reward?.toString() };
+        return { success: true, message: res.message || 'checkin success', reward: this.readCheckinReward(res.data) };
       }
       const directMessage = this.extractResponseMessage(res);
       if (directMessage) firstFailureMessage = directMessage;
@@ -1121,7 +1358,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
             return {
               success: true,
               message: signInRes.message || 'checked in',
-              reward: signInRes.data?.reward?.toString(),
+              reward: this.readCheckinReward(signInRes.data),
             };
           }
           const signInMessage = this.extractResponseMessage(signInRes);
@@ -1139,7 +1376,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
             headers,
           });
           if (res?.success) {
-            return { success: true, message: res.message || 'checkin success', reward: res.data?.reward?.toString() };
+            return { success: true, message: res.message || 'checkin success', reward: this.readCheckinReward(res.data) };
           }
           const cookieMessage = this.extractResponseMessage(res);
           if (cookieMessage) firstFailureMessage = cookieMessage;

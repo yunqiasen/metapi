@@ -297,6 +297,7 @@ onBeforeUnmount(() => {
 - 需要补齐环境变量或路由参数：直接查 [配置说明](/configuration)。
 - 正在处理客户端或第三方工具接入：优先看 [客户端接入](/client-integration)。
 - 遇到高频报错或异常表现：去 [常见问题 FAQ](/faq) 快速定位根因。
+- 接入 AgentRouter 等特殊站点：查看 [特殊站点认证与签到说明](/site-auth-special-sites)。
 
 ## 文档维护入口
 

@@ -1,3 +1,4 @@
+import { buildBalanceSnapshotUpdates } from './balanceSnapshot.js';
 import { db, schema } from '../db/index.js';
 import { getAdapter } from './platforms/index.js';
 import { eq } from 'drizzle-orm';
@@ -394,12 +395,8 @@ export async function refreshBalance(accountId: number) {
   const keepUnsupportedCheckinDegraded = isUnsupportedCheckinRuntimeHealth(existingRuntimeHealth);
 
   const updates: Record<string, unknown> = {
-    balance: balanceInfo.balance,
-    balanceUsed: balanceInfo.used,
-    quota: balanceInfo.quota,
+    ...buildBalanceSnapshotUpdates(balanceInfo),
     status: account.status === 'expired' ? 'active' : account.status,
-    lastBalanceRefresh: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
   };
   if (nextExtraConfig !== account.extraConfig) {
     updates.extraConfig = nextExtraConfig;

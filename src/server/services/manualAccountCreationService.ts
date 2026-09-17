@@ -3,6 +3,7 @@ import { db, schema } from '../db/index.js';
 import { insertAndGetById } from '../db/insertHelpers.js';
 import { startBackgroundTask } from './backgroundTaskService.js';
 import { getAdapter } from './platforms/index.js';
+import { normalizeNewApiCredential } from './platforms/newApiShield.js';
 import {
   guessPlatformUserIdFromUsername,
   mergeAccountExtraConfig,
@@ -162,10 +163,12 @@ export async function createManualAccount({
   let username = typeof usernameOverride === 'string'
     ? usernameOverride.trim()
     : (body.username || '').trim();
+  rawAccessToken = normalizeNewApiCredential(rawAccessToken);
   let accessToken = rawAccessToken;
-  let apiToken = (body.apiToken || '').trim();
+  let apiToken = normalizeNewApiCredential(body.apiToken || '');
   let tokenType: 'session' | 'apikey' | 'unknown' = 'unknown';
   let verifiedModels: string[] = [];
+  let verifiedPlatformUserId: number | undefined;
 
   if (credentialMode === 'apikey') {
     if (body.skipModelFetch === true) {
@@ -194,7 +197,12 @@ export async function createManualAccount({
     }
   } else {
     const verifyResult = await withTimeout(
-      () => adapter.verifyToken(site.url, rawAccessToken, body.platformUserId),
+      () => adapter.verifyToken(
+        site.url,
+        rawAccessToken,
+        body.platformUserId,
+        credentialMode,
+      ),
       ACCOUNT_VERIFY_TIMEOUT_MS,
       buildAccountVerifyTimeoutMessage(),
     );
@@ -210,6 +218,8 @@ export async function createManualAccount({
     }
 
     if (tokenType === 'session') {
+      const userId = verifyResult.userInfo?.id;
+      if (typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0) verifiedPlatformUserId = userId;
       if (!username && verifyResult.userInfo?.username) username = String(verifyResult.userInfo.username).trim();
       if (!apiToken && verifyResult.apiToken) apiToken = String(verifyResult.apiToken).trim();
     } else if (tokenType === 'apikey') {
@@ -222,7 +232,7 @@ export async function createManualAccount({
   }
 
   const resolvedPlatformUserId =
-    body.platformUserId || guessPlatformUserIdFromUsername(username) || undefined;
+    verifiedPlatformUserId || body.platformUserId || guessPlatformUserIdFromUsername(username) || undefined;
   const resolvedCredentialMode: AccountCredentialMode = tokenType === 'apikey' ? 'apikey' : 'session';
   const extraConfigPatch: Record<string, unknown> = { credentialMode: resolvedCredentialMode };
   if (resolvedPlatformUserId) {

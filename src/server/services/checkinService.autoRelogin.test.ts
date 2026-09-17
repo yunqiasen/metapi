@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const adapterMock = {
+  platformName: 'new-api',
   checkin: vi.fn(),
   login: vi.fn(),
 };
@@ -59,7 +60,7 @@ vi.mock('../db/index.js', () => {
 });
 
 vi.mock('./platforms/index.js', () => ({
-  getAdapter: () => adapterMock,
+  getAdapterForSite: () => adapterMock,
 }));
 
 vi.mock('./notifyService.js', () => ({
@@ -80,6 +81,7 @@ vi.mock('./accountCredentialService.js', () => ({
 
 describe('checkinService auto relogin', () => {
   beforeEach(() => {
+    adapterMock.platformName = 'new-api';
     adapterMock.checkin.mockReset();
     adapterMock.login.mockReset();
     notifyMock.mockReset();
@@ -303,6 +305,83 @@ describe('checkinService auto relogin', () => {
 
     expect(result.success).toBe(true);
     expect(updateSetMock).toHaveBeenCalledWith(expect.objectContaining({ lastCheckinAt: expect.any(String) }));
+  });
+
+  it('records AgentRouter as a real success only when the observed balance increases', async () => {
+    adapterMock.platformName = 'agentrouter';
+    selectAllMock.mockReturnValue([{
+      accounts: {
+        id: 20,
+        username: 'linuxdo_59260',
+        accessToken: 'session-token',
+        status: 'active',
+        balance: 213,
+        quota: 2300,
+        extraConfig: JSON.stringify({ platformUserId: 59260 }),
+      },
+      sites: {
+        id: 25,
+        name: 'Agentrouter',
+        url: 'https://agentrouter.org',
+        platform: 'new-api',
+      },
+    }]);
+    adapterMock.checkin.mockResolvedValue({
+      success: true,
+      message: 'AgentRouter 已通过 OAuth 重新登录完成签到',
+      credentialsRefreshed: true,
+      reward: '3',
+      balanceInfo: { balance: 216, used: 2087, quota: 2303 },
+    });
+
+    const { checkinAccount } = await import('./checkinService.js');
+    const result = await checkinAccount(20);
+
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('success');
+    expect(result.reward).toBe('3');
+    expect(refreshBalanceMock).not.toHaveBeenCalled();
+    const log = insertValuesMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(log.status).toBe('success');
+    expect(log.reward).toBe('3');
+  });
+
+  it('does not report AgentRouter success when login-state validation adds no quota', async () => {
+    adapterMock.platformName = 'agentrouter';
+    selectAllMock.mockReturnValue([{
+      accounts: {
+        id: 21,
+        username: 'linuxdo_59260',
+        accessToken: 'session-token',
+        status: 'active',
+        balance: 213,
+        quota: 2300,
+        extraConfig: JSON.stringify({ platformUserId: 59260 }),
+      },
+      sites: {
+        id: 25,
+        name: 'Agentrouter',
+        url: 'https://agentrouter.org',
+        platform: 'new-api',
+      },
+    }]);
+    adapterMock.checkin.mockResolvedValue({
+      success: false,
+      message: 'AgentRouter 已重新登录，额度无新增',
+      credentialsRefreshed: true, quotaUnchanged: true, reward: '0',
+      balanceInfo: { balance: 213, used: 2087, quota: 2300 },
+    });
+
+    const { checkinAccount } = await import('./checkinService.js');
+    const result = await checkinAccount(21);
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('额度无新增');
+    const log = insertValuesMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(log.status).toBe('skipped');
+    expect(log.message).toContain('额度无新增');
+    expect(notifyMock).not.toHaveBeenCalled();
   });
 
   it('treats unsupported checkin endpoint responses as skipped', async () => {

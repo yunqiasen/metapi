@@ -34,6 +34,7 @@ export const PLATFORM_ENDPOINT_FALLBACK_MAP: Record<string, string[]> = {
   claude: ['anthropic'],
   gemini: ['gemini'],
   anyrouter: ['openai', 'anthropic'],
+  agentrouter: ['openai', 'anthropic'],
 };
 
 export const PLATFORM_ALIASES: Record<string, string> = {

@@ -36,6 +36,7 @@ npm run docs:build
 | 客户端与工具接入 | [客户端接入](./client-integration.md) | Open WebUI、Cherry Studio、Cursor 等接入方式变化时 |
 | 管理后台脚本化调用 | [管理 API](./management-api.md) | 需要说明如何用脚本批量导入站点/账号，或对接外部自动化时 |
 | 运维排障与日常维护 | [运维手册](./operations.md) / [常见问题](./faq.md) | 新排障案例、备份恢复、健康检查、典型报错变化时 |
+| 特殊站点认证/签到 | [特殊站点认证与签到说明](./site-auth-special-sites.md) | AgentRouter 等差异化站点的认证方式、签到机制或提示文案变化时 |
 | FAQ / 教程协作沉淀 | [FAQ/教程贡献规范](./community/faq-tutorial-guidelines.md) | 需要新增教程、FAQ 模板、内容提交流程时 |
 | 仓库目录与组织约定 | [目录规范](./project-structure.md) | 目录结构、归档策略或命名约定变化时 |
 | 工程守则与漂移治理 | [Harness Engineering](./engineering/harness-engineering.md) | 需要更新仓库级黄金原则、自动巡检范围或垃圾回收流程时 |

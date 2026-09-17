@@ -1,13 +1,16 @@
+import { buildBalanceSnapshotUpdates } from './balanceSnapshot.js';
 import { db, schema } from '../db/index.js';
-import { getAdapter } from './platforms/index.js';
+import { getAdapterForSite } from './platforms/index.js';
 import { eq, and } from 'drizzle-orm';
 import { sendNotification } from './notifyService.js';
 import { isCloudflareChallenge, isTokenExpiredError } from './alertRules.js';
 import { reportTokenExpired } from './alertService.js';
 import { refreshBalance } from './balanceService.js';
 import { parseCheckinRewardAmount } from './checkinRewardParser.js';
+import { executeAgentRouterOauthRelogin } from './agentRouterOauthReloginService.js';
 import {
   getAutoReloginConfig,
+  getCheckinReloginConfig,
   getPlatformUserIdFromExtraConfig,
   guessPlatformUserIdFromUsername,
   mergeAccountExtraConfig,
@@ -93,7 +96,7 @@ function inferRewardFromBalanceDelta(previousBalance: unknown, latestBalance: un
 }
 
 async function tryAutoRelogin(account: any, site: any): Promise<string | null> {
-  const adapter = getAdapter(site.platform);
+  const adapter = getAdapterForSite(site.platform, site.url);
   if (!adapter) return null;
 
   const relogin = getAutoReloginConfig(account.extraConfig);
@@ -120,7 +123,20 @@ async function tryAutoRelogin(account: any, site: any): Promise<string | null> {
   return result.accessToken;
 }
 
-export async function checkinAccount(accountId: number, options?: { skipEvent?: boolean; scheduleMode?: 'cron' | 'interval' }) {
+type CheckinOptions = { skipEvent?: boolean; scheduleMode?: 'cron' | 'interval' };
+const activeCheckins = new Map<number, Promise<Awaited<ReturnType<typeof executeCheckinAccount>>>>();
+
+export function checkinAccount(accountId: number, options?: CheckinOptions) {
+  const active = activeCheckins.get(accountId);
+  if (active) return active;
+  const task = executeCheckinAccount(accountId, options).finally(() => {
+    if (activeCheckins.get(accountId) === task) activeCheckins.delete(accountId);
+  });
+  activeCheckins.set(accountId, task);
+  return task;
+}
+
+async function executeCheckinAccount(accountId: number, options?: CheckinOptions) {
   const rows = await db
     .select()
     .from(schema.accounts)
@@ -168,7 +184,7 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
     };
   }
 
-  const adapter = getAdapter(site.platform);
+  const adapter = getAdapterForSite(site.platform, site.url);
   if (!adapter) return { success: false, status: 'failed' as const, message: `unsupported platform: ${site.platform}` };
 
   const storedPlatformUserId = getPlatformUserIdFromExtraConfig(account.extraConfig);
@@ -179,10 +195,23 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
 
   const accountProxyUrl = resolveProxyUrlFromExtraConfig(account.extraConfig);
   let activeAccessToken = account.accessToken;
-  let result = await withAccountProxyOverride(accountProxyUrl,
-    () => adapter.checkin(site.url, activeAccessToken, platformUserId));
 
-  if (!result.success && shouldAttemptAutoRelogin(result.message)) {
+  // AgentRouter 的签到只在“真实重新登录”时由服务端触发；
+  // 配置了第三方登录 Cookie 时走 OAuth 重登录，否则仅返回配置提示。
+  const agentRouterRelogin = adapter.platformName === 'agentrouter'
+    ? getCheckinReloginConfig(account.extraConfig, account.username)
+    : null;
+  let result = agentRouterRelogin
+    ? await executeAgentRouterOauthRelogin({
+        account,
+        site,
+        provider: agentRouterRelogin.provider,
+        providerCookie: agentRouterRelogin.cookie,
+      })
+    : await withAccountProxyOverride(accountProxyUrl,
+        () => adapter.checkin(site.url, activeAccessToken, platformUserId));
+
+  if (adapter.platformName !== 'agentrouter' && !result.success && shouldAttemptAutoRelogin(result.message)) {
     const refreshedAccessToken = await tryAutoRelogin(account, site);
     if (refreshedAccessToken) {
       activeAccessToken = refreshedAccessToken;
@@ -192,27 +221,45 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
   }
 
   const isCloudflare = isCloudflareChallenge(result.message);
-  const alreadyCheckedIn = isAlreadyCheckedInMessage(result.message);
+  const quotaUnchanged = result.quotaUnchanged === true;
+  const alreadyCheckedIn = result.alreadyCheckedIn === true || isAlreadyCheckedInMessage(result.message);
   const unsupportedCheckin = isUnsupportedCheckinMessage(result.message);
   const manualVerificationRequired = isManualVerificationRequiredMessage(result.message);
   const manualVerificationMessage = '\u7ad9\u70b9\u5f00\u542f\u4e86 Turnstile \u6821\u9a8c\uff0c\u9700\u8981\u4eba\u5de5\u7b7e\u5230';
-  const logMessage = manualVerificationRequired ? manualVerificationMessage : result.message;
-  const effectiveSuccess = result.success || alreadyCheckedIn || unsupportedCheckin || manualVerificationRequired;
-  const shouldRefreshBalance = result.success || alreadyCheckedIn;
-  const directCheckinSuccess = result.success && !alreadyCheckedIn && !unsupportedCheckin;
-  const shouldAdvanceLastCheckinAt = directCheckinSuccess || (alreadyCheckedIn && options?.scheduleMode !== 'interval');
-  const normalizedStatus: CheckinExecutionStatus = effectiveSuccess
-    ? ((unsupportedCheckin || manualVerificationRequired) ? 'skipped' : 'success')
-    : 'failed';
-  let logReward = result.reward;
-  let refreshedBalanceInfo: Awaited<ReturnType<typeof refreshBalance>> | null = null;
+  const inlineBalanceInfo = result.balanceInfo || null;
+  const isAgentRouter = adapter.platformName === 'agentrouter';
+  // 只有真实完成 OAuth 重登录（credentialsRefreshed）的 AgentRouter 结果才参与奖励推算；
+  // 单纯探活读到余额不能把“余额差”当签到奖励。
+  const agentRouterCredible = isAgentRouter
+    && (result as { credentialsRefreshed?: boolean }).credentialsRefreshed === true;
+  const rewardPending = agentRouterCredible && result.rewardPending === true;
+  const agentRouterProbeOnly = isAgentRouter && result.success && !agentRouterCredible;
+  const agentRouterProbeMessage = 'AgentRouter \u672a\u89e6\u53d1\u7b7e\u5230\uff1a\u8be5\u7ad9\u53ea\u6709\u91cd\u65b0\u767b\u5f55\u624d\u7b97\u7b7e\u5230\uff0c\u8bf7\u5728\u300c\u7f16\u8f91\u8d26\u53f7 \u2192 \u7b7e\u5230\u91cd\u767b\u5f55\u300d\u914d\u7f6e\u7b2c\u4e09\u65b9\u767b\u5f55 Cookie';
+  const logMessage = manualVerificationRequired
+    ? manualVerificationMessage
+    : agentRouterProbeOnly
+      ? agentRouterProbeMessage
+      : result.message;
+  const effectiveSuccess = result.success || alreadyCheckedIn || quotaUnchanged || rewardPending || unsupportedCheckin || manualVerificationRequired;
+  const shouldRefreshBalance = (result.success && !agentRouterProbeOnly) || alreadyCheckedIn || quotaUnchanged || rewardPending;
+  const directCheckinSuccess = result.success && !quotaUnchanged && !agentRouterProbeOnly && !alreadyCheckedIn && !unsupportedCheckin;
+  const shouldAdvanceLastCheckinAt = directCheckinSuccess || agentRouterCredible || (alreadyCheckedIn && options?.scheduleMode !== 'interval');
+  const normalizedStatus: CheckinExecutionStatus = (quotaUnchanged || agentRouterProbeOnly || rewardPending)
+    ? 'skipped'
+    : effectiveSuccess
+      ? ((unsupportedCheckin || manualVerificationRequired) ? 'skipped' : 'success')
+      : 'failed';
+  let logReward = rewardPending || agentRouterProbeOnly ? undefined : quotaUnchanged ? '0' : result.reward;
+  let refreshedBalanceInfo: Awaited<ReturnType<typeof refreshBalance>> | null = inlineBalanceInfo;
 
   if (effectiveSuccess) {
-    const healthState = (unsupportedCheckin || manualVerificationRequired) ? 'degraded' : 'healthy';
+    const healthState = (unsupportedCheckin || manualVerificationRequired || agentRouterProbeOnly || rewardPending) ? 'degraded' : 'healthy';
     const healthReason = unsupportedCheckin
       ? '\u7ad9\u70b9\u4e0d\u652f\u6301\u7b7e\u5230\u63a5\u53e3'
       : manualVerificationRequired
         ? manualVerificationMessage
+      : agentRouterProbeOnly
+        ? agentRouterProbeMessage
       : (alreadyCheckedIn ? '\u4eca\u65e5\u5df2\u7b7e\u5230' : (result.message || '\u7b7e\u5230\u6210\u529f'));
     setAccountRuntimeHealth(account.id, {
       state: healthState,
@@ -220,7 +267,8 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
       source: 'checkin',
     });
 
-    const updates: Record<string, unknown> = {};
+    const updates: Record<string, unknown> = shouldRefreshBalance && inlineBalanceInfo
+      ? buildBalanceSnapshotUpdates(inlineBalanceInfo) : {};
     if (shouldAdvanceLastCheckinAt) {
       updates.lastCheckinAt = new Date().toISOString();
     }
@@ -241,14 +289,14 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
         .run();
     }
 
-    if (shouldRefreshBalance) {
+    if (shouldRefreshBalance && !refreshedBalanceInfo && !rewardPending) {
       try {
         refreshedBalanceInfo = await refreshBalance(account.id);
       } catch {}
     }
 
     const parsedReward = parseCheckinRewardAmount(logReward) || parseCheckinRewardAmount(result.message);
-    if (directCheckinSuccess && parsedReward <= 0) {
+    if (directCheckinSuccess && !isAgentRouter && parsedReward <= 0) {
       const inferredReward = inferRewardFromBalanceDelta(account.balance, refreshedBalanceInfo?.balance);
       if (inferredReward > 0) {
         logReward = inferredReward.toString();
@@ -314,7 +362,9 @@ export async function checkinAccount(accountId: number, options?: { skipEvent?: 
 
   return {
     ...result,
-    success: effectiveSuccess,
+    success: (quotaUnchanged || agentRouterProbeOnly || rewardPending) ? false : effectiveSuccess,
+    message: logMessage,
+    ...(logReward ? { reward: logReward } : {}),
     status: normalizedStatus,
     ...(normalizedStatus === 'skipped' ? { skipped: true } : {}),
   };

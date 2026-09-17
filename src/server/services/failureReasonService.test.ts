@@ -58,4 +58,14 @@ describe('failureReasonService', () => {
     expect(result.code).toBe('checkin_not_supported');
     expect(result.category).toBe('site');
   });
+  it('classifies AgentRouter no-quota-change skip as a normal state', () => {
+    const result = classifyFailureReason({
+      message: 'AgentRouter 已执行签到校验，额度无新增，当前余额 212.63',
+      status: 'skipped',
+    });
+    expect(result.code).toBe('quota_unchanged');
+    expect(result.category).toBe('state');
+    expect(result.title).toBe('额度无新增');
+  });
+
 });

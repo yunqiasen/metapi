@@ -1,0 +1,30 @@
+# Source: /home/div/1_Project_dir/Project/metapi-main-deploy
+# main 41767a6 + preserved local repairs; build via scripts/deploy/build-main-repairs.sh.
+# Startup guard checks the full artifact manifest before touching the database.
+services:
+  metapi-main:
+    image: metapi:main-repairs-41767a6-20260916-122647-7a894c8b60d5
+    pull_policy: never
+    container_name: metapi-main
+    init: true
+    ports:
+      - "4010:4000"
+    volumes:
+      - /home/div/1_Project_dir/Project/metapi-main-deploy-data:/app/data
+    env_file:
+      - .env
+    environment:
+      PORT: 4000
+      DATA_DIR: /app/data
+      HOST: 0.0.0.0
+    command:
+      - sh
+      - -c
+      - node scripts/deploy/main-repairs-guard.mjs --runtime /app && node dist/server/db/migrate.js && exec node dist/server/index.js
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/desktop/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped

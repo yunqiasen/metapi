@@ -4,47 +4,91 @@ import { withSiteProxyRequestInit } from '../siteProxy.js';
 
 const SHIELD_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36';
 
+const SESSION_COOKIE_NAMES = new Set([
+  'session',
+  'token',
+  'auth_token',
+  'access_token',
+  'jwt',
+  'jwt_token',
+]);
+
+function stripCredentialPrefix(value: string): string {
+  return value
+    .trim()
+    .replace(/^cookie\s*:\s*/i, '')
+    .replace(/^bearer\s+/i, '')
+    .trim();
+}
+
+function isCookieHeader(value: string): boolean {
+  if (value.includes(';')) return true;
+  if (/^(?:session|token|auth[_-]?token|access[_-]?token|jwt(?:[_-]?token)?)\s*=/i.test(value)) return true;
+  // A padded bare base64 token ends in '='; a named cookie has a value after it.
+  return /^[!#$%&'*+.^_`|~0-9a-z-]+\s*=[^=]/i.test(value);
+}
+
+function parseCookiePairs(value: string): Array<{ name: string; value: string }> {
+  return value
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .flatMap((part) => {
+      const separator = part.indexOf('=');
+      if (separator <= 0) return [];
+      const name = part.slice(0, separator).trim();
+      const cookieValue = part.slice(separator + 1).trim().replace(/[\r\n\t]+/g, '');
+      if (!name || !cookieValue) return [];
+      return [{ name, value: cookieValue }];
+    });
+}
+
+function normalizeCookieHeader(value: string): string {
+  return parseCookiePairs(value)
+    .map(({ name, value: cookieValue }) => `${name}=${cookieValue}`)
+    .join('; ');
+}
+
+export function normalizeNewApiCredential(token: string): string {
+  const stripped = stripCredentialPrefix(token || '');
+  if (!stripped) return '';
+  if (isCookieHeader(stripped)) return normalizeCookieHeader(stripped);
+  return stripped.replace(/\s+/g, '');
+}
+
 export function buildNewApiCookieCandidates(token: string): string[] {
-  const trimmed = (token || '').trim();
-  if (!trimmed) return [];
+  const normalized = normalizeNewApiCredential(token);
+  if (!normalized) return [];
 
-  const raw = trimmed.startsWith('Bearer ') ? trimmed.slice(7).trim() : trimmed;
   const candidates: string[] = [];
-
-  if (raw.includes('=')) {
-    candidates.push(raw);
+  if (isCookieHeader(normalized)) {
+    candidates.push(normalized);
+    for (const pair of parseCookiePairs(normalized)) {
+      const name = pair.name.toLowerCase();
+      if (SESSION_COOKIE_NAMES.has(name) || name.includes('session') || name.includes('token') || name.includes('auth')) {
+        candidates.push(`${pair.name}=${pair.value}`);
+      }
+      if (name === 'session') candidates.push(`session=${pair.value}`);
+      if (name === 'token') candidates.push(`token=${pair.value}`);
+    }
+  } else {
+    candidates.push(`session=${normalized}`);
+    candidates.push(`token=${normalized}`);
   }
-
-  candidates.push(`session=${raw}`);
-  candidates.push(`token=${raw}`);
 
   return Array.from(new Set(candidates));
 }
 
 export function hasUsableSessionCookie(cookieHeader: string): boolean {
   if (!cookieHeader) return false;
-  const ignored = new Set(['acw_tc', 'acw_sc__v2', 'cdn_sec_tc']);
-  const pairs = cookieHeader.split(';').map((part) => part.trim()).filter(Boolean);
-  for (const pair of pairs) {
-    const eq = pair.indexOf('=');
-    if (eq <= 0) continue;
-    const name = pair.slice(0, eq).trim().toLowerCase();
-    if (!name || ignored.has(name)) continue;
-    if (
-      name === 'session'
-      || name === 'token'
-      || name === 'auth_token'
-      || name === 'access_token'
-      || name === 'jwt'
-      || name === 'jwt_token'
-      || name.includes('session')
-      || name.includes('token')
-      || name.includes('auth')
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return parseCookiePairs(normalizeNewApiCredential(cookieHeader)).some(({ name }) => {
+    const normalizedName = name.toLowerCase();
+    return !['acw_tc', 'acw_sc__v2', 'cdn_sec_tc'].includes(normalizedName)
+      && (SESSION_COOKIE_NAMES.has(normalizedName)
+        || normalizedName.includes('session')
+        || normalizedName.includes('token')
+        || normalizedName.includes('auth'));
+  });
 }
 
 function parseChallengeArg1(html: string): string | null {

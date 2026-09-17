@@ -15,6 +15,8 @@ interface RequestSnapshot {
 const COOKIE_SESSION_TOKEN = 'cookie-session-token';
 const COOKIE_REQUIRES_USER_TOKEN = 'cookie-requires-user';
 const COOKIE_REQUIRES_X_USER_ID_TOKEN = 'cookie-requires-x-user-id';
+const COOKIE_SESSION_FIRST_TOKEN = 'cookie-session-first-token';
+const STALE_IMPORTED_SHIELD_SESSION = 'stale-imported-shield-session';
 const CHECKIN_ALREADY_TOKEN = 'checkin-already-token';
 const CHECKIN_INVALID_URL_TOKEN = 'checkin-invalid-url-token';
 const CHECKIN_INVALID_URL_EXPIRED_SESSION_TOKEN = 'checkin-invalid-url-expired-session-token';
@@ -30,6 +32,8 @@ const SHIELD_LOGIN_COOKIE = 'challenge-seed';
 const COOKIE_ONLY_LOGIN_USERNAME = 'cookie-only-user';
 const COOKIE_ONLY_LOGIN_PASSWORD = 'cookie-only-pass';
 const COOKIE_ONLY_LOGIN_SESSION = 'cookie-only-session';
+const ROTATING_SHIELD_USERNAME = 'rotating-shield-user';
+const ROTATING_SHIELD_PASSWORD = 'rotating-shield-pass';
 const OPENAI_MODELS_SHIELDED_TOKEN = 'openai-models-shielded-token';
 const COOKIE_SHIELDED_TOKEN = Buffer.from(
   `1771864970|${Buffer.from('username=linuxdo_131936').toString('base64')}|sig`,
@@ -62,9 +66,13 @@ describe('NewApiAdapter', () => {
   let server: ReturnType<typeof createServer>;
   let baseUrl: string;
   let requests: RequestSnapshot[] = [];
+  let rotatingShieldPhase = 0;
+  let cookieSessionFirstPoisoned = false;
 
   beforeEach(async () => {
     requests = [];
+    rotatingShieldPhase = 0;
+    cookieSessionFirstPoisoned = false;
     server = createServer((req: IncomingMessage, res: ServerResponse) => {
       requests.push({
         method: req.method || 'GET',
@@ -123,13 +131,55 @@ describe('NewApiAdapter', () => {
           const isCookieOnlyLogin =
             payload.username === COOKIE_ONLY_LOGIN_USERNAME &&
             payload.password === COOKIE_ONLY_LOGIN_PASSWORD;
-          if (!isShieldLogin && !isCookieOnlyLogin) {
+          const isRotatingShieldLogin =
+            payload.username === ROTATING_SHIELD_USERNAME &&
+            payload.password === ROTATING_SHIELD_PASSWORD;
+          if (!isShieldLogin && !isCookieOnlyLogin && !isRotatingShieldLogin) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, message: 'invalid credentials' }));
             return;
           }
 
           const cookieHeader = typeof req.headers.cookie === 'string' ? req.headers.cookie : '';
+          if (isRotatingShieldLogin) {
+            const hasSolvedCookie = cookieHeader.includes(`acw_sc__v2=${ANYROUTER_CHALLENGE_ACW}`);
+            if (rotatingShieldPhase === 0 && !hasSolvedCookie) {
+              rotatingShieldPhase = 1;
+              res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Set-Cookie': `cdn_sec_tc=${SHIELD_LOGIN_COOKIE}; Path=/; HttpOnly`,
+              });
+              res.end(ANYROUTER_CHALLENGE_HTML);
+              return;
+            }
+            if (rotatingShieldPhase === 1 && hasSolvedCookie) {
+              rotatingShieldPhase = 2;
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, data: { token: SHIELD_LOGIN_TOKEN } }));
+              return;
+            }
+            if (rotatingShieldPhase === 2 && hasSolvedCookie) {
+              rotatingShieldPhase = 3;
+              res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+              res.end('<html><body>stale shield cookie</body></html>');
+              return;
+            }
+            if (rotatingShieldPhase === 3 && !hasSolvedCookie) {
+              rotatingShieldPhase = 4;
+              res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Set-Cookie': `cdn_sec_tc=${SHIELD_LOGIN_COOKIE}; Path=/; HttpOnly`,
+              });
+              res.end(ANYROUTER_CHALLENGE_HTML);
+              return;
+            }
+            if (rotatingShieldPhase === 4 && hasSolvedCookie) {
+              rotatingShieldPhase = 5;
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: true, data: { token: SHIELD_LOGIN_TOKEN } }));
+              return;
+            }
+          }
           if (!cookieHeader.includes(`acw_sc__v2=${ANYROUTER_CHALLENGE_ACW}`)) {
             res.writeHead(200, {
               'Content-Type': 'text/html; charset=utf-8',
@@ -152,7 +202,12 @@ describe('NewApiAdapter', () => {
             });
             res.end(JSON.stringify({
               success: true,
-              data: {},
+              data: {
+                id: 1752,
+                username: 'cookie-only-user',
+                quota: 775000000,
+                used_quota: 0,
+              },
             }));
             return;
           }
@@ -279,6 +334,47 @@ describe('NewApiAdapter', () => {
       }
 
       if (req.url === '/api/user/self') {
+        if (typeof req.headers.cookie === 'string' && req.headers.cookie.includes(`session=${STALE_IMPORTED_SHIELD_SESSION}`)) {
+          if (req.headers.cookie.includes('acw_sc__v2=stale-imported')) {
+            res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end('<html><body>stale imported shield cookie</body></html>');
+            return;
+          }
+          if (!req.headers.cookie.includes(`acw_sc__v2=${ANYROUTER_CHALLENGE_ACW}`)) {
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Set-Cookie': `cdn_sec_tc=${SHIELD_LOGIN_COOKIE}; Path=/; HttpOnly`,
+            });
+            res.end(ANYROUTER_CHALLENGE_HTML);
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            data: { id: 59260, username: 'linuxdo_59260', quota: 108000000, used_quota: 1040000000 },
+          }));
+          return;
+        }
+
+        if (req.headers.authorization === `Bearer ${COOKIE_SESSION_FIRST_TOKEN}`) {
+          cookieSessionFirstPoisoned = true;
+          res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<html><body>bearer probe triggered upstream shield</body></html>');
+          return;
+        }
+        if (typeof req.headers.cookie === 'string' && req.headers.cookie.includes(`session=${COOKIE_SESSION_FIRST_TOKEN}`)) {
+          if (cookieSessionFirstPoisoned) {
+            res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end('<html><body>request budget exhausted</body></html>');
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            data: { id: 182711, username: 'session-first-user', quota: 5000000, used_quota: 1000000 },
+          }));
+          return;
+        }
         if (typeof req.headers.authorization === 'string' && req.headers.authorization === `Bearer ${BALANCE_SHIELD_FAILURE_TOKEN}`) {
           res.writeHead(200, {
             'Content-Type': 'text/html; charset=utf-8',
@@ -631,6 +727,58 @@ describe('NewApiAdapter', () => {
     ).toBe(true);
   });
 
+  it('reuses solved shield cookies across consecutive anyrouter logins', async () => {
+    const adapter = new AnyRouterAdapter();
+
+    const first = await adapter.login(baseUrl, SHIELD_LOGIN_USERNAME, SHIELD_LOGIN_PASSWORD);
+    const second = await adapter.login(baseUrl, SHIELD_LOGIN_USERNAME, SHIELD_LOGIN_PASSWORD);
+
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+    expect(requests.filter((r) => r.url === '/api/user/login')).toHaveLength(3);
+  });
+
+  it('drops stale cached shield cookies and resolves a fresh challenge after proxy rotation', async () => {
+    const adapter = new AnyRouterAdapter();
+
+    const first = await adapter.login(baseUrl, ROTATING_SHIELD_USERNAME, ROTATING_SHIELD_PASSWORD);
+    const second = await adapter.login(baseUrl, ROTATING_SHIELD_USERNAME, ROTATING_SHIELD_PASSWORD);
+
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+    expect(requests.filter((request) => request.url === '/api/user/login')).toHaveLength(5);
+  });
+
+  it('does not reuse account session cookies between consecutive anyrouter logins', async () => {
+    const adapter = new AnyRouterAdapter();
+
+    const first = await adapter.login(baseUrl, COOKIE_ONLY_LOGIN_USERNAME, COOKIE_ONLY_LOGIN_PASSWORD);
+    const second = await adapter.login(baseUrl, SHIELD_LOGIN_USERNAME, SHIELD_LOGIN_PASSWORD);
+
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+    const loginRequests = requests.filter((request) => request.url === '/api/user/login');
+    expect(loginRequests).toHaveLength(3);
+    expect(loginRequests[2]?.headers.cookie || '').toContain(`acw_sc__v2=${ANYROUTER_CHALLENGE_ACW}`);
+    expect(loginRequests[2]?.headers.cookie || '').not.toContain(`session=${COOKIE_ONLY_LOGIN_SESSION}`);
+  });
+
+  it('accepts an F12 Cookie header with wrapped session text', async () => {
+    const adapter = new NewApiAdapter();
+    const wrapped = `Cookie: session=${COOKIE_SESSION_TOKEN.slice(0, 7)}\n${COOKIE_SESSION_TOKEN.slice(7)};\n acw_tc=shield-tc`;
+    const result = await adapter.getUserInfo(baseUrl, wrapped, 7788);
+    expect(result).toMatchObject({ username: 'cookie-user' });
+    expect(requests.some((request) => request.headers.cookie === `session=${COOKIE_SESSION_TOKEN}; acw_tc=shield-tc`)).toBe(true);
+  });
+
+  it('accepts a bare session split across pasted lines', async () => {
+    const adapter = new NewApiAdapter();
+    const wrapped = `${COOKIE_SESSION_TOKEN.slice(0, 7)}\n${COOKIE_SESSION_TOKEN.slice(7)}`;
+    const result = await adapter.getUserInfo(baseUrl, wrapped, 7788);
+    expect(result).toMatchObject({ username: 'cookie-user' });
+    expect(requests.some((request) => request.headers.cookie === `session=${COOKIE_SESSION_TOKEN}`)).toBe(true);
+  });
+
   it('uses session cookie as access credential when login success has no token payload', async () => {
     const adapter = new NewApiAdapter();
     const result = await adapter.login(baseUrl, COOKIE_ONLY_LOGIN_USERNAME, COOKIE_ONLY_LOGIN_PASSWORD);
@@ -639,6 +787,42 @@ describe('NewApiAdapter', () => {
     expect(result.accessToken || '').toContain(`session=${COOKIE_ONLY_LOGIN_SESSION}`);
     expect(result.accessToken || '').toContain(`acw_sc__v2=${ANYROUTER_CHALLENGE_ACW}`);
     expect(result.accessToken || '').toContain(`cdn_sec_tc=${SHIELD_LOGIN_COOKIE}`);
+    expect(result.platformUserId).toBe(1752);
+    expect(result.userInfo?.username).toBe('cookie-only-user');
+    expect(result.balance).toEqual({ balance: 1550, used: 0, quota: 1550, todayIncome: undefined, todayQuotaConsumption: undefined });
+  });
+
+  it('skips OpenAI model probing when the caller explicitly verifies a session token', async () => {
+    const adapter = new NewApiAdapter();
+    const result = await adapter.verifyToken(baseUrl, COOKIE_SESSION_TOKEN, undefined, 'session');
+
+    expect(result.tokenType).toBe('session');
+    expect(requests.some((r) => r.url === '/v1/models')).toBe(false);
+  });
+
+  it('verifies explicit session credentials through cookies before bearer probes', async () => {
+    const adapter = new AnyRouterAdapter();
+    const result = await adapter.verifyToken(baseUrl, COOKIE_SESSION_FIRST_TOKEN, 182711, 'session');
+
+    expect(result.tokenType).toBe('session');
+    expect(result.userInfo?.username).toBe('session-first-user');
+    const selfRequests = requests.filter((request) => request.url === '/api/user/self');
+    expect(selfRequests[0]?.headers.cookie).toContain(`session=${COOKIE_SESSION_FIRST_TOKEN}`);
+    expect(selfRequests.some((request) => request.headers.authorization === `Bearer ${COOKIE_SESSION_FIRST_TOKEN}`)).toBe(false);
+  });
+
+  it('drops stale shield cookies imported with a valid session and rebuilds the WAF state', async () => {
+    const adapter = new AnyRouterAdapter();
+    const token = `session=${STALE_IMPORTED_SHIELD_SESSION}; acw_tc=stale; cdn_sec_tc=stale; acw_sc__v2=stale-imported`;
+    const result = await adapter.verifyToken(baseUrl, token, 59260, 'session');
+
+    expect(result.tokenType).toBe('session');
+    expect(result.userInfo?.username).toBe('linuxdo_59260');
+    const selfRequests = requests.filter((request) => request.url === '/api/user/self');
+    expect(selfRequests).toHaveLength(2);
+    expect(selfRequests[0]?.headers.cookie).toContain(`session=${STALE_IMPORTED_SHIELD_SESSION}`);
+    expect(selfRequests.every((request) => !request.headers.cookie?.includes('acw_sc__v2=stale-imported'))).toBe(true);
+    expect(selfRequests[1]?.headers.cookie).toContain(`acw_sc__v2=${ANYROUTER_CHALLENGE_ACW}`);
   });
 
   it('detects cookie session values as session cookies for anyrouter-like deployments', async () => {

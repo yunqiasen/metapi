@@ -12,6 +12,7 @@ let adapterPlatformName = 'new-api';
 vi.mock('../../services/platforms/index.js', () => ({
   getAdapter: () => ({
     platformName: adapterPlatformName,
+    verificationDiagnostics: adapterPlatformName === 'agentrouter' ? 'adapter' : undefined,
     verifyToken: (...args: unknown[]) => verifyTokenMock(...args),
   }),
 }));
@@ -62,6 +63,36 @@ describe('accounts verify-token shield detection', () => {
   afterAll(async () => {
     await app.close();
     delete process.env.DATA_DIR;
+  });
+
+  it('passes the explicit credential mode into adapter verification', async () => {
+    verifyTokenMock.mockResolvedValueOnce({ tokenType: 'session', userInfo: { username: 'fixture-user' } });
+
+    const site = await db.insert(schema.sites).values({
+      name: 'Session Mode Site',
+      url: 'https://session-mode.example.com',
+      platform: 'new-api',
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/verify-token',
+      payload: {
+        siteId: site.id,
+        accessToken: 'session-token',
+        platformUserId: 200029,
+        credentialMode: 'session',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, tokenType: 'session' });
+    expect(verifyTokenMock).toHaveBeenCalledWith(
+      site.url,
+      'session-token',
+      200029,
+      'session',
+    );
   });
 
   it('returns rebind hint when verify-token reports invalid access token', async () => {
@@ -338,4 +369,31 @@ describe('accounts verify-token shield detection', () => {
     });
     expect(undiciFetchMock).toHaveBeenCalled();
   });
+  it.each([
+    ['shield', 'AgentRouter 返回阿里云滑块验证页（HTTP 200），未判定 Session 失效', { shieldBlocked: true }],
+    ['invalid-user-id', 'AgentRouter 用户 ID 与当前 Session 不匹配', { invalidUserId: true }],
+    ['needs-user-id', 'AgentRouter 需要站点用户 ID', { needsUserId: true }],
+    ['non-json', 'AgentRouter 接口返回非 JSON 响应（HTTP 403）', {}],
+    ['timeout', 'AgentRouter request timeout', {}],
+  ] as const)('surfaces Agent adapter %s diagnostics without sending secondary credential probes', async (kind, message, flags) => {
+    adapterPlatformName = 'agentrouter';
+    const { AgentRouterRequestError } = await import('../../services/platforms/agentRouterRequest.js');
+    verifyTokenMock.mockRejectedValueOnce(new AgentRouterRequestError(message, kind, 200));
+    const site = await db.insert(schema.sites).values({ name: 'Agent Fixture', url: 'https://agent-fixture.example.com', platform: 'agentrouter' }).returning().get();
+    const response = await app.inject({ method: 'POST', url: '/api/accounts/verify-token', payload: { siteId: site.id, accessToken: 'session=fixture', platformUserId: 59260, credentialMode: 'session' } });
+    expect(response.json()).toMatchObject({ success: false, message, reasonCode: kind, ...flags });
+    expect(undiciFetchMock).not.toHaveBeenCalled();
+    if (kind !== 'shield') expect(response.json().shieldBlocked).toBeUndefined();
+  });
+
+  it('does not classify a normal SPA as a shield challenge for legacy adapters', async () => {
+    adapterPlatformName = 'one-api';
+    verifyTokenMock.mockResolvedValueOnce({ tokenType: 'unknown' });
+    undiciFetchMock.mockResolvedValue({ text: async () => '<html><script type="module" src="/assets/index.js"></script><div id="root"></div></html>', headers: { get: () => 'text/html' } });
+    const site = await db.insert(schema.sites).values({ name: 'SPA Fixture', url: 'https://spa-fixture.example.com', platform: 'one-api' }).returning().get();
+    const response = await app.inject({ method: 'POST', url: '/api/accounts/verify-token', payload: { siteId: site.id, accessToken: 'session=fixture', platformUserId: 59260 } });
+    expect(response.json().success).toBe(false);
+    expect(response.json().shieldBlocked).toBeUndefined();
+  });
+
 });

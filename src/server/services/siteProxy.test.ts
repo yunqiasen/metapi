@@ -37,6 +37,19 @@ describe('siteProxy', () => {
     delete process.env.DATA_DIR;
   });
 
+  it('keys protocol state by the effective account route without changing the site route', async () => {
+    await db.run(sql`
+      INSERT INTO sites (name, url, platform, proxy_url)
+      VALUES ('route-state-site', 'https://route-state.example.com', 'anyrouter', 'http://127.0.0.1:7890')
+    `);
+    const { resolveEffectiveSiteProxyUrlByRequestUrl, withAccountProxyOverride } = await import('./siteProxy.js');
+    const url = 'https://route-state.example.com/api/user/self';
+    expect(await resolveEffectiveSiteProxyUrlByRequestUrl(url)).toBe('http://127.0.0.1:7890');
+    expect(await withAccountProxyOverride('http://127.0.0.1:7891', () => resolveEffectiveSiteProxyUrlByRequestUrl(url)))
+      .toBe('http://127.0.0.1:7891');
+    expect(await resolveEffectiveSiteProxyUrlByRequestUrl(url)).toBe('http://127.0.0.1:7890');
+  });
+
   it('resolves system proxy only for sites that opt in', async () => {
     await db.insert(schema.settings).values({
       key: 'system_proxy_url',

@@ -4,13 +4,17 @@ import { insertAndGetById } from "../../db/insertHelpers.js";
 import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { refreshBalance } from "../../services/balanceService.js";
 import { getAdapter } from "../../services/platforms/index.js";
+import { normalizeNewApiCredential } from "../../services/platforms/newApiShield.js";
+import { agentRouterVerificationFailure } from "../../services/platforms/agentRouterRequest.js";
 import {
   convergeAccountMutation,
   rebuildRoutesBestEffort,
 } from "../../services/accountMutationWorkflow.js";
 import {
+  getCheckinReloginConfig,
   getCredentialModeFromExtraConfig,
   getProxyUrlFromExtraConfig,
+  normalizeCheckinReloginProvider,
   guessPlatformUserIdFromUsername,
   hasOauthProvider,
   getSub2ApiAuthFromExtraConfig,
@@ -536,6 +540,19 @@ export async function accountsRoutes(app: FastifyInstance) {
       }
 
       const guessedPlatformUserId = guessPlatformUserIdFromUsername(username);
+      const resolvedPlatformUserId = loginResult.platformUserId || guessedPlatformUserId;
+      let resolvedLoginBalance = loginResult.balance && loginResult.balance.quota > 0
+        ? loginResult.balance
+        : null;
+      if (!resolvedLoginBalance && adapter.platformName === "anyrouter") {
+        try {
+          resolvedLoginBalance = await adapter.getBalance(
+            site.url,
+            loginResult.accessToken,
+            resolvedPlatformUserId,
+          );
+        } catch {}
+      }
 
       // Auto-fetch API token(s)
       let apiToken: string | null = null;
@@ -545,24 +562,27 @@ export async function accountsRoutes(app: FastifyInstance) {
         enabled?: boolean | null;
       }> = [];
       try {
-        apiToken = await adapter.getApiToken(
-          site.url,
-          loginResult.accessToken,
-          guessedPlatformUserId,
-        );
-      } catch {}
-      try {
         apiTokens = await adapter.getApiTokens(
           site.url,
           loginResult.accessToken,
-          guessedPlatformUserId,
+          resolvedPlatformUserId,
         );
       } catch {}
 
-      const preferredApiToken =
+      const listedApiToken =
         apiTokens.find((token) => token.enabled !== false && token.key)?.key ||
-        apiToken ||
         null;
+      if (!listedApiToken) {
+        try {
+          apiToken = await adapter.getApiToken(
+            site.url,
+            loginResult.accessToken,
+            resolvedPlatformUserId,
+          );
+        } catch {}
+      }
+
+      const preferredApiToken = listedApiToken || apiToken || null;
       const existing = await db
         .select()
         .from(schema.accounts)
@@ -582,8 +602,8 @@ export async function accountsRoutes(app: FastifyInstance) {
           updatedAt: new Date().toISOString(),
         },
       };
-      if (guessedPlatformUserId) {
-        extraConfigPatch.platformUserId = guessedPlatformUserId;
+      if (resolvedPlatformUserId) {
+        extraConfigPatch.platformUserId = resolvedPlatformUserId;
       }
       const extraConfig = mergeAccountExtraConfig(
         existing?.extraConfig,
@@ -600,6 +620,12 @@ export async function accountsRoutes(app: FastifyInstance) {
             apiToken: preferredApiToken || undefined,
             checkinEnabled: true,
             status: "active",
+            ...(resolvedLoginBalance ? {
+              balance: resolvedLoginBalance.balance,
+              balanceUsed: resolvedLoginBalance.used,
+              quota: resolvedLoginBalance.quota,
+              lastBalanceRefresh: new Date().toISOString(),
+            } : {}),
             extraConfig,
             updatedAt: new Date().toISOString(),
           })
@@ -617,6 +643,12 @@ export async function accountsRoutes(app: FastifyInstance) {
             accessToken: loginResult.accessToken,
             apiToken: preferredApiToken || undefined,
             checkinEnabled: true,
+            ...(resolvedLoginBalance ? {
+              balance: resolvedLoginBalance.balance,
+              balanceUsed: resolvedLoginBalance.used,
+              quota: resolvedLoginBalance.quota,
+              lastBalanceRefresh: new Date().toISOString(),
+            } : {}),
             extraConfig,
             isPinned: false,
             sortOrder: await getNextAccountSortOrder(),
@@ -636,13 +668,14 @@ export async function accountsRoutes(app: FastifyInstance) {
         return { success: false, message: "account create failed" };
       }
 
+      const deferAnyRouterRefresh = adapter.platformName === "anyrouter";
       await convergeAccountMutation({
         accountId: result.id,
         preferredApiToken,
         defaultTokenSource: "sync",
         upstreamTokens: apiTokens,
-        refreshBalance: true,
-        refreshModels: true,
+        refreshBalance: !deferAnyRouterRefresh,
+        refreshModels: !deferAnyRouterRefresh,
         rebuildRoutes: true,
         continueOnError: true,
       });
@@ -675,7 +708,7 @@ export async function accountsRoutes(app: FastifyInstance) {
       }
 
       const { siteId, platformUserId } = parsedBody.data;
-      const accessToken = (parsedBody.data.accessToken || "").trim();
+      const accessToken = normalizeNewApiCredential(parsedBody.data.accessToken || "");
       const credentialMode = resolveRequestedCredentialMode(
         parsedBody.data.credentialMode,
       );
@@ -706,6 +739,7 @@ export async function accountsRoutes(app: FastifyInstance) {
           ? Math.trunc(platformUserId)
           : undefined;
       const hasProvidedUserId = parsedPlatformUserId !== undefined;
+      const adapterOwnsDiagnostics = adapter.verificationDiagnostics === "adapter";
       const skipRawShieldDetection =
         normalizedPlatform === "new-api" || normalizedPlatform === "anyrouter";
       const diagnoseVerificationFailure = async (
@@ -720,7 +754,7 @@ export async function accountsRoutes(app: FastifyInstance) {
           if (
             !skipRawShieldDetection &&
             ct.includes("text/html") &&
-            /var\s+arg1\s*=|acw_sc__v2|cdn_sec_tc|<script/i.test(text)
+            /var\s+arg1\s*=|acw_sc__v2|cdn_sec_tc|aliyunCaptcha|aliyun_waf_aa|cf-chl-|challenge-platform/i.test(text)
           ) {
             return "shield-blocked";
           }
@@ -889,7 +923,9 @@ export async function accountsRoutes(app: FastifyInstance) {
             models: availableModels.slice(0, 10),
           };
         } catch (err: any) {
-          if (isVerificationTimeoutError(err)) {
+          const adapterFailure = agentRouterVerificationFailure(err);
+          if (adapterFailure) return adapterFailure;
+          if (!adapterOwnsDiagnostics && isVerificationTimeoutError(err)) {
             const failure = buildVerificationFailureResponse(
               await diagnoseVerificationFailure({
                 useApiEndpointPool: true,
@@ -908,12 +944,19 @@ export async function accountsRoutes(app: FastifyInstance) {
       try {
         result = await withTimeout(
           () =>
-            adapter.verifyToken(site.url, accessToken, parsedPlatformUserId),
+            adapter.verifyToken(
+              site.url,
+              accessToken,
+              parsedPlatformUserId,
+              credentialMode,
+            ),
           ACCOUNT_VERIFY_TIMEOUT_MS,
           `Token verification timed out (${Math.max(1, Math.round(ACCOUNT_VERIFY_TIMEOUT_MS / 1000))}s)`,
         );
       } catch (err: any) {
-        if (isVerificationTimeoutError(err)) {
+        const adapterFailure = agentRouterVerificationFailure(err);
+        if (adapterFailure) return adapterFailure;
+        if (!adapterOwnsDiagnostics && isVerificationTimeoutError(err)) {
           const failure = buildVerificationFailureResponse(
             await diagnoseVerificationFailure(),
           );
@@ -953,6 +996,10 @@ export async function accountsRoutes(app: FastifyInstance) {
         };
       }
 
+      if (adapterOwnsDiagnostics) {
+        return { success: false, message: "Session Token 验证失败，请检查账号凭证和站点用户 ID" };
+      }
+
       // Try to explain unknown failures: missing user id vs anti-bot challenge page.
       const detectVerifyFailureReason =
         async (): Promise<VerifyFailureReason> => {
@@ -965,7 +1012,7 @@ export async function accountsRoutes(app: FastifyInstance) {
             if (
               !skipRawShieldDetection &&
               ct.includes("text/html") &&
-              /var\s+arg1\s*=|acw_sc__v2|cdn_sec_tc|<script/i.test(text)
+              /var\s+arg1\s*=|acw_sc__v2|cdn_sec_tc|aliyunCaptcha|aliyun_waf_aa|cf-chl-|challenge-platform/i.test(text)
             ) {
               return "shield-blocked";
             }
@@ -1099,7 +1146,7 @@ export async function accountsRoutes(app: FastifyInstance) {
           .send({ success: false, message: "账号 ID 无效" });
       }
 
-      const nextAccessToken = (parsedBody.data.accessToken || "").trim();
+      const nextAccessToken = normalizeNewApiCredential(parsedBody.data.accessToken || "");
       if (!nextAccessToken) {
         return reply
           .code(400)
@@ -1146,6 +1193,7 @@ export async function accountsRoutes(app: FastifyInstance) {
               site.url,
               nextAccessToken,
               candidatePlatformUserId,
+              "session",
             ),
         );
       } catch (err: any) {
@@ -1434,6 +1482,12 @@ export async function accountsRoutes(app: FastifyInstance) {
         if (body[key] !== undefined) updates[key] = body[key];
       }
 
+      for (const key of ["accessToken", "apiToken"] as const) {
+        if (typeof updates[key] === "string") {
+          updates[key] = normalizeNewApiCredential(updates[key]);
+        }
+      }
+
       const wantsManagedSub2ApiAuthPatch =
         Object.prototype.hasOwnProperty.call(body, "refreshToken") ||
         Object.prototype.hasOwnProperty.call(body, "tokenExpiresAt");
@@ -1511,6 +1565,49 @@ export async function accountsRoutes(app: FastifyInstance) {
         }
         updates.extraConfig = mergeAccountExtraConfig(baseExtraConfig, {
           proxyUrl: normalizedProxy ?? undefined,
+        });
+      }
+
+      const wantsCheckinReloginPatch =
+        Object.prototype.hasOwnProperty.call(body, "checkinReloginProvider") ||
+        Object.prototype.hasOwnProperty.call(body, "checkinReloginCookie");
+      if (wantsCheckinReloginPatch) {
+        const baseExtraConfig =
+          typeof updates.extraConfig === "string"
+            ? updates.extraConfig
+            : account.extraConfig;
+        const existingRelogin = getCheckinReloginConfig(baseExtraConfig);
+        const nextProvider = Object.prototype.hasOwnProperty.call(
+          body,
+          "checkinReloginProvider",
+        )
+          ? normalizeCheckinReloginProvider(body.checkinReloginProvider)
+          : (existingRelogin?.provider ?? null);
+        if (
+          Object.prototype.hasOwnProperty.call(body, "checkinReloginProvider") &&
+          typeof body.checkinReloginProvider === "string" &&
+          body.checkinReloginProvider.trim() &&
+          !nextProvider
+        ) {
+          return reply.code(400).send({
+            message: "Invalid checkinReloginProvider. Expected github or linuxdo.",
+          });
+        }
+        const nextCookie = Object.prototype.hasOwnProperty.call(
+          body,
+          "checkinReloginCookie",
+        )
+          ? normalizeNewApiCredential(String(body.checkinReloginCookie ?? ""))
+          : (existingRelogin?.cookie ?? "");
+        updates.extraConfig = mergeAccountExtraConfig(baseExtraConfig, {
+          checkinRelogin:
+            nextProvider && nextCookie
+              ? {
+                  provider: nextProvider,
+                  cookie: nextCookie,
+                  updatedAt: new Date().toISOString(),
+                }
+              : undefined,
         });
       }
 

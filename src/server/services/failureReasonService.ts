@@ -16,6 +16,7 @@ type FailureReasonCode =
   | 'cloudflare_challenge'
   | 'token_expired'
   | 'already_checked_in'
+  | 'quota_unchanged'
   | 'network_timeout'
   | 'upstream_error'
   | 'unknown_error';
@@ -47,6 +48,16 @@ export function classifyFailureReason(
       title: '站点已禁用',
       actionHint: '启用站点后再试',
       detailHint: '该账号所属站点处于禁用状态，任务会自动跳过。',
+    };
+  }
+
+  if (status === 'skipped' && includesAny(text, ['额度无新增', 'quota unchanged', 'no quota increase'])) {
+    return {
+      code: 'quota_unchanged',
+      category: 'state',
+      title: '额度无新增',
+      actionHint: '无需重复执行',
+      detailHint: '本次签到校验未观察到总额度增加，系统已按跳过记录。',
     };
   }
 

@@ -6,6 +6,7 @@ describe('defaultConnectionSegment', () => {
     expect(resolveInitialConnectionSegment('new-api')).toBe('session');
     expect(resolveInitialConnectionSegment('one-api')).toBe('session');
     expect(resolveInitialConnectionSegment('anyrouter')).toBe('session');
+    expect(resolveInitialConnectionSegment('agentrouter')).toBe('session');
     expect(resolveInitialConnectionSegment('veloera')).toBe('session');
     expect(resolveInitialConnectionSegment('one-hub')).toBe('session');
     expect(resolveInitialConnectionSegment('done-hub')).toBe('session');

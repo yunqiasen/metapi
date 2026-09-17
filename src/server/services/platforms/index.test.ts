@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { type AddressInfo } from 'node:net';
-import { detectPlatform, getAdapter } from './index.js';
+import { detectPlatform, getAdapter, getAdapterForSite } from './index.js';
 
 async function withHttpServer(
   handler: (req: IncomingMessage, res: ServerResponse) => void,
@@ -43,6 +43,11 @@ describe('getAdapter platform aliases', () => {
     expect(adapter?.platformName).toBe('anyrouter');
   });
 
+  it('returns dedicated agentrouter adapter and repairs legacy new-api site identity by URL', () => {
+    expect(getAdapter('agentrouter')?.platformName).toBe('agentrouter');
+    expect(getAdapterForSite('new-api', 'https://agentrouter.org')?.platformName).toBe('agentrouter');
+  });
+
   it('handles case-insensitive platform strings', () => {
     const adapter = getAdapter('Veloera');
     expect(adapter?.platformName).toBe('veloera');
@@ -71,6 +76,11 @@ describe('getAdapter platform aliases', () => {
   it('detects anyrouter URL before generic new-api adapter', async () => {
     const adapter = await detectPlatform('https://anyrouter.top');
     expect(adapter?.platformName).toBe('anyrouter');
+  });
+
+  it('detects agentrouter URL before generic new-api adapter', async () => {
+    const adapter = await detectPlatform('https://agentrouter.org');
+    expect(adapter?.platformName).toBe('agentrouter');
   });
 
   it('detects done-hub URL before generic adapters', async () => {

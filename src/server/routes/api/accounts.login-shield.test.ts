@@ -85,6 +85,36 @@ describe('accounts login shield detection', () => {
     expect(body.message || '').not.toContain('Unexpected token');
   });
 
+  it('keeps a non-shield upstream failure out of the shield response', async () => {
+    loginMock.mockResolvedValueOnce({
+      success: false,
+      message: '登录接口返回非 JSON 响应 (HTTP 403)',
+    });
+
+    const site = await db.insert(schema.sites).values({
+      name: 'Public New API',
+      url: 'https://public.example.com',
+      platform: 'new-api',
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/login',
+      payload: {
+        siteId: site.id,
+        username: 'demo-user',
+        password: 'demo-password',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: false,
+      shieldBlocked: false,
+      message: '登录接口返回非 JSON 响应 (HTTP 403)',
+    });
+  });
+
   it('rate limits repeated login attempts from the same client ip', async () => {
     loginMock.mockResolvedValue({
       success: false,
